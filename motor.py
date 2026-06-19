@@ -193,6 +193,8 @@ def procesar_orami(data):
             base.update({"tipo":"abono","transferencia":round(float(abono),2),"banco":"SPEI recibido","estado":"verificada"})
             db.collection("movimientos").document(doc_id).set(base, merge=True); nuevos+=1
     log(f"ORAMI procesado: {nuevos} movimientos, {verif} recargas verificadas")
+    enviar_push("Estado de cuenta de ORAMI",
+                f"Llegó el reporte de ORAMI: {nuevos} movimientos y {verif} recargas verificadas.")
 
 # ---------- Main ----------
 def main():
