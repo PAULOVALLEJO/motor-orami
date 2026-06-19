@@ -1,0 +1,25 @@
+name: Motor Control ORAMI
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'   # cada 15 minutos
+  workflow_dispatch: {}       # permite correrlo a mano para probar
+
+jobs:
+  motor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Correr el motor
+        env:
+          IMAP_HOST: mail.nacionalissimo.com
+          IMAP_PORT: '993'
+          IMAP_USER: ${{ secrets.IMAP_USER }}
+          IMAP_PASS: ${{ secrets.IMAP_PASS }}
+          FIREBASE_SA: ${{ secrets.FIREBASE_SA }}
+        run: python motor.py
