@@ -1,9 +1,11 @@
 name: Motor Control ORAMI
 
 on:
-  schedule:
-    - cron: '0 * * * *'   # cada hora (en el minuto 0)
-  workflow_dispatch: {}       # permite correrlo a mano para probar
+  workflow_dispatch: {}       # lo dispara cron-job.org (cada 15 min) y se puede correr a mano
+
+concurrency:
+  group: motor               # candado: solo una corrida a la vez (evita avisos duplicados)
+  cancel-in-progress: false
 
 jobs:
   motor:
