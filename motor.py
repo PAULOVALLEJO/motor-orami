@@ -122,6 +122,50 @@ def procesar_banco(body):
     log("recarga creada:", cve, monto)
     enviar_push("Transferencia registrada", "Transferiste $%s a ORAMI. Recarga pendiente de confirmar." % importe.group(1))
 
+# ---------- Procesar recibo de FACEBOOK / META ----------
+def es_facebook(subj, body):
+    s=(subj or "").lower(); b=(body or ""); bl=b.lower()
+    # remitente real de los recibos: noreply@business-updates.facebook.com (Meta for Business)
+    if "business-updates.facebook.com" in bl or "facebookmail.com" in bl: return True
+    if "Meta Platforms Ireland" in b: return True
+    if "Amount billed" in b and "Reference number" in b: return True
+    if "meta ads and marketing messages receipt" in s: return True
+    if ("receipt" in s or "recibo" in s) and ("facebook" in s or "meta" in s): return True
+    return False
+
+EN_MES = {'Jan':1,'Feb':2,'Mar':3,'Apr':4,'May':5,'Jun':6,'Jul':7,'Aug':8,'Sep':9,'Oct':10,'Nov':11,'Dec':12}
+
+def procesar_facebook(body):
+    importe = re.search(r"Amount billed\s*MX\$?\s*([\d,]+\.\d{2})", body)
+    ref     = re.search(r"Reference number\s+(?:i\s+)?([A-Z0-9]{6,})", body)
+    fecha   = re.search(r"Invoice Date\s*([A-Z][a-z]{2}\s+\d{1,2},\s*\d{4})", body)
+    if not (importe and ref):
+        log("recibo Facebook sin importe/referencia, ignorado"); return
+    monto = round(float(importe.group(1).replace(",", "")), 2)
+    rid = ref.group(1)
+    doc_id = "fb-" + rid
+    ref_doc = db.collection("movimientos").document(doc_id)
+    if ref_doc.get().exists:
+        log("recibo Facebook ya registrado:", rid); return
+    MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
+    if fecha:
+        p = re.match(r"([A-Z][a-z]{2})\s+(\d{1,2}),\s*(\d{4})", fecha.group(1))
+        dt = datetime(int(p.group(3)), EN_MES.get(p.group(1),datetime.now().month), int(p.group(2)))
+    else:
+        dt = datetime.now()
+    orden = (dt - datetime(1899,12,30)).days
+    ref_doc.set({
+        "tipo":"cargo","servicio":"Facebook","origen":"facebook",
+        "monto":monto,"banco":"Facebook (Meta) - Recibo "+rid,
+        "fecha":"%d-%s"%(dt.day,MESES[dt.month-1]),
+        "fechaFull":"%d-%s-%d"%(dt.day,MESES[dt.month-1],dt.year),
+        "hora":dt.strftime("%H:%M:%S"),"recibo":rid,
+        "orden":orden,"estado":"pendiente"
+    })
+    log("cargo Facebook capturado:", rid, monto)
+    enviar_push("Facebook te cobró",
+                "Facebook cobró $%s. Pendiente de confirmar con ORAMI." % importe.group(1))
+
 # ---------- Procesar correo de ORAMI (xlsx) ----------
 def parse_xlsx(data):
     ns = {'a':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
@@ -164,10 +208,32 @@ def merchant(d):
     m=re.search(r'5161020004119535 (.+?) Tarjeta', d)
     return m.group(1).strip() if m else d[:50]
 
+def casar_facebook(monto, serial, recibo):
+    """Busca un cargo de Facebook PENDIENTE (capturado del recibo de Meta) con el mismo monto.
+    NO exige la misma fecha: ORAMI registra el cargo 1+ dias despues (los de sabado/domingo
+    les aparecen hasta el lunes), por eso se acepta hasta 7 dias de diferencia. Toma el de
+    fecha mas cercana y lo marca confirmado por ORAMI -> evita doble conteo.
+    Devuelve True si caso un cargo de Facebook ya existente."""
+    try:
+        pend = db.collection("movimientos").where("origen","==","facebook").where("estado","==","pendiente").stream()
+    except Exception as e:
+        log("query facebook pendiente fallo:", e); return False
+    cand=[]
+    for d in pend:
+        m=d.to_dict()
+        if abs(round(float(m.get("monto",0)),2)-monto) < 0.01 and abs(float(m.get("orden",0))-serial) <= 7:
+            cand.append((abs(float(m.get("orden",0))-serial), d))
+    if not cand: return False
+    cand.sort(key=lambda x:x[0])
+    doc=cand[0][1]
+    doc.reference.update({"estado":"verificada","reciboOrami":recibo,"confirmadoOrami":True})
+    log("cargo Facebook confirmado por ORAMI:", doc.id, monto)
+    return True
+
 def procesar_orami(data):
     rows = parse_xlsx(data)
     MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
-    nuevos=0; verif=0
+    nuevos=0; verif=0; verif_fb=0
     for r in rows:
         if not r or not str(r[0]).strip().isdigit(): continue
         serial=float(r[1]); dt=datetime(1899,12,30)+timedelta(days=serial)
@@ -179,8 +245,12 @@ def procesar_orami(data):
               "hora":(datetime(1899,12,30)+timedelta(days=float(r[2]))).strftime("%H:%M:%S") if len(r)>2 and r[2] else dt.strftime("%H:%M:%S"),
               "recibo":recibo}
         if cargo not in ('',None):
+            monto=round(float(cargo),2)
+            # Si es cargo de Facebook, intentar casarlo con el recibo de Meta ya capturado (no duplicar)
+            if servicio(desc)=='Facebook' and casar_facebook(monto, serial, recibo):
+                verif_fb+=1; continue
             doc_id="mov-"+recibo
-            base.update({"tipo":"cargo","monto":round(float(cargo),2),"banco":merchant(desc),"estado":"verificada"})
+            base.update({"tipo":"cargo","monto":monto,"banco":merchant(desc),"estado":"verificada","origen":"orami"})
             db.collection("movimientos").document(doc_id).set(base, merge=True); nuevos+=1
         elif abono not in ('',None):
             # buscar clave de rastreo en la descripcion para casar con la recarga del banco
@@ -192,9 +262,10 @@ def procesar_orami(data):
             doc_id="mov-"+recibo
             base.update({"tipo":"abono","transferencia":round(float(abono),2),"banco":"SPEI recibido","estado":"verificada"})
             db.collection("movimientos").document(doc_id).set(base, merge=True); nuevos+=1
-    log(f"ORAMI procesado: {nuevos} movimientos, {verif} recargas verificadas")
+    log(f"ORAMI procesado: {nuevos} movimientos, {verif} recargas verificadas, {verif_fb} cargos Facebook confirmados")
+    extra = f" y {verif_fb} cargos de Facebook confirmados" if verif_fb else ""
     enviar_push("Estado de cuenta de ORAMI",
-                f"Llegó el reporte de ORAMI: {nuevos} movimientos y {verif} recargas verificadas.")
+                f"Llegó el reporte de ORAMI: {nuevos} movimientos y {verif} recargas verificadas{extra}.")
 
 # ---------- Main ----------
 def main():
@@ -213,10 +284,13 @@ def main():
         log("correo de:", frm, "| asunto:", subj)
         try:
             xlsx = get_xlsx_attachment(msg)
+            body = get_body(msg)
             if "banorte" in frm or ("transferencia" in subj.lower() and "spei" in subj.lower()):
-                procesar_banco(get_body(msg))
+                procesar_banco(body)
             elif xlsx is not None:
                 procesar_orami(xlsx)
+            elif "facebook.com" in frm or es_facebook(subj, body):
+                procesar_facebook(body)
             else:
                 log("correo no reconocido, se ignora")
         except Exception as e:
