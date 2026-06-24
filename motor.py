@@ -138,7 +138,7 @@ EN_MES = {'Jan':1,'Feb':2,'Mar':3,'Apr':4,'May':5,'Jun':6,'Jul':7,'Aug':8,'Sep':
 def procesar_facebook(body):
     importe = re.search(r"Amount billed\s*MX\$?\s*([\d,]+\.\d{2})", body)
     ref     = re.search(r"Reference number\s+(?:i\s+)?([A-Z0-9]{6,})", body)
-    fecha   = re.search(r"Invoice Date\s*([A-Z][a-z]{2}\s+\d{1,2},\s*\d{4})", body)
+    fecha   = re.search(r"Invoice Date\s*([A-Z][a-z]{2}\s+\d{1,2},\s*\d{4}(?:,\s*\d{1,2}:\d{2}\s*[AP]M)?)", body)
     if not (importe and ref):
         log("recibo Facebook sin importe/referencia, ignorado"); return
     monto = round(float(importe.group(1).replace(",", "")), 2)
@@ -149,11 +149,14 @@ def procesar_facebook(body):
         log("recibo Facebook ya registrado:", rid); return
     MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
     if fecha:
-        p = re.match(r"([A-Z][a-z]{2})\s+(\d{1,2}),\s*(\d{4})", fecha.group(1))
-        dt = datetime(int(p.group(3)), EN_MES.get(p.group(1),datetime.now().month), int(p.group(2)))
+        p = re.match(r"([A-Z][a-z]{2})\s+(\d{1,2}),\s*(\d{4})(?:,\s*(\d{1,2}):(\d{2})\s*([AP])M)?", fecha.group(1))
+        mo = EN_MES.get(p.group(1), datetime.now().month)
+        hh = (int(p.group(4))%12 + (12 if p.group(6)=='P' else 0)) if p.group(4) else 0
+        mm = int(p.group(5)) if p.group(5) else 0
+        dt = datetime(int(p.group(3)), mo, int(p.group(2)), hh, mm)
     else:
         dt = datetime.now()
-    orden = (dt - datetime(1899,12,30)).days
+    orden = (dt - datetime(1899,12,30)).total_seconds()/86400.0
     ref_doc.set({
         "tipo":"cargo","servicio":"Facebook","origen":"facebook",
         "monto":monto,"banco":"Facebook (Meta) - Recibo "+rid,
