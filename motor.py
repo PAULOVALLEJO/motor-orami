@@ -21,7 +21,7 @@ IMAP_USER = os.environ["IMAP_USER"]
 IMAP_PASS = os.environ["IMAP_PASS"]
 SA_JSON   = os.environ["FIREBASE_SA"]   # contenido JSON de la cuenta de servicio
 
-SALDO_INICIAL = 13718.72  # saldo real al 1-jun-2026 (reconciliado con ORAMI). Se ajustara con el ciclo mensual.
+SALDO_INICIAL = 23833.71  # saldo real al 1-jun-2026 (reconciliado con la lista completa de recargas + estado de cuenta ORAMI 30-jun-2026; no incluye el retenido). Se ajustara con el ciclo mensual.
 
 # ---------- Firebase ----------
 cred = credentials.Certificate(json.loads(SA_JSON))
