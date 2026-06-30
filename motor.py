@@ -211,26 +211,32 @@ def merchant(d):
     m=re.search(r'5161020004119535 (.+?) Tarjeta', d)
     return m.group(1).strip() if m else d[:50]
 
-def casar_facebook(monto, serial, recibo):
-    """Busca un cargo de Facebook PENDIENTE (capturado del recibo de Meta) con el mismo monto.
-    NO exige la misma fecha: ORAMI registra el cargo 1+ dias despues (los de sabado/domingo
-    les aparecen hasta el lunes), por eso se acepta hasta 7 dias de diferencia. Toma el de
-    fecha mas cercana y lo marca confirmado por ORAMI -> evita doble conteo.
-    Devuelve True si caso un cargo de Facebook ya existente."""
-    try:
-        pend = db.collection("movimientos").where("origen","==","facebook").where("estado","==","pendiente").stream()
-    except Exception as e:
-        log("query facebook pendiente fallo:", e); return False
-    cand=[]
-    for d in pend:
-        m=d.to_dict()
-        if abs(round(float(m.get("monto",0)),2)-monto) < 0.01 and abs(float(m.get("orden",0))-serial) <= 7:
-            cand.append((abs(float(m.get("orden",0))-serial), d))
-    if not cand: return False
-    cand.sort(key=lambda x:x[0])
-    doc=cand[0][1]
-    doc.reference.update({"estado":"verificada","reciboOrami":recibo,"confirmadoOrami":True})
-    log("cargo Facebook confirmado por ORAMI:", doc.id, monto)
+def casar_facebook(desc, monto, base, recibo):
+    """Casa un cargo de Facebook del estado de cuenta de ORAMI con el recibo de Meta
+    USANDO LA REFERENCIA (FACEBK *XXXXX en la descripcion), que es identica al
+    'Reference number' del recibo de Meta -> el id del doc es fb-<ref>. Asi el cruce es
+    100% confiable aunque varios cargos sean del mismo monto ($15,000). El monto YA NO se
+    usa para emparejar (eso causaba duplicados).
+    - Si ya existe fb-<ref> (recibo de Meta ya capturado): lo marca verificado por ORAMI.
+    - Si NO existe (ORAMI llego antes que el recibo): crea el cargo bajo el id fb-<ref>
+      para que el recibo posterior NO lo duplique (procesar_facebook ve que ya existe y se sale).
+    Devuelve True si era un cargo FACEBK con referencia (manejado aqui); False si no la trae
+    (p.ej. 'FACEBOOK MEXICO' o 'METAPAY' sin referencia -> sigue como cargo normal)."""
+    m = re.search(r"FACEBK\s*\*?\s*([A-Z0-9]{6,})", (desc or "").upper())
+    if not m:
+        return False
+    rid = m.group(1)
+    ref_doc = db.collection("movimientos").document("fb-"+rid)
+    if ref_doc.get().exists:
+        ref_doc.update({"estado":"verificada","reciboOrami":recibo,"confirmadoOrami":True})
+        log("cargo Facebook confirmado por ORAMI (ref %s):"%rid, recibo)
+    else:
+        nb = dict(base)
+        nb.update({"tipo":"cargo","monto":monto,"banco":"FACEBK *"+rid,"servicio":"Facebook",
+                   "origen":"orami","estado":"verificada","confirmadoOrami":True,
+                   "reciboOrami":recibo,"refFb":rid})
+        ref_doc.set(nb, merge=True)
+        log("cargo Facebook creado desde ORAMI bajo id de referencia:", rid)
     return True
 
 def procesar_orami(data):
@@ -250,7 +256,7 @@ def procesar_orami(data):
         if cargo not in ('',None):
             monto=round(float(cargo),2)
             # Si es cargo de Facebook, intentar casarlo con el recibo de Meta ya capturado (no duplicar)
-            if servicio(desc)=='Facebook' and casar_facebook(monto, serial, recibo):
+            if servicio(desc)=='Facebook' and casar_facebook(desc, monto, base, recibo):
                 verif_fb+=1; continue
             doc_id="mov-"+recibo
             base.update({"tipo":"cargo","monto":monto,"banco":merchant(desc),"estado":"verificada","origen":"orami"})
