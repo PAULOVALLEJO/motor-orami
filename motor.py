@@ -6,9 +6,11 @@ Motor Control ORAMI
 - Correo de ORAMI (xlsx estado de cuenta) -> agrega/actualiza movimientos y marca recargas VERIFICADAS por clave de rastreo
 Se ejecuta en GitHub Actions (cron).
 """
-import os, ssl, imaplib, email, re, json, io, zipfile
+import os, ssl, imaplib, email, re, json, io, zipfile, smtplib
 import xml.etree.ElementTree as ET
 from email.header import decode_header
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 
 import firebase_admin
@@ -20,6 +22,9 @@ IMAP_PORT = int(os.environ.get("IMAP_PORT", "993"))
 IMAP_USER = os.environ["IMAP_USER"]
 IMAP_PASS = os.environ["IMAP_PASS"]
 SA_JSON   = os.environ["FIREBASE_SA"]   # contenido JSON de la cuenta de servicio
+SMTP_HOST = os.environ.get("SMTP_HOST", "mail.nacionalissimo.com")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))
+REENVIO_BBVA = os.environ.get("REENVIO_BBVA", "jgortizm@hotmail.com")  # a quien se reenvia el aviso de BBVA
 
 SALDO_INICIAL = 23833.71  # saldo real al 1-jun-2026 (reconciliado con la lista completa de recargas + estado de cuenta ORAMI 30-jun-2026; no incluye el retenido). Se ajustara con el ciclo mensual.
 
@@ -121,6 +126,107 @@ def procesar_banco(body):
     })
     log("recarga creada:", cve, monto)
     enviar_push("Transferencia registrada", "Transferiste $%s a ORAMI. Recarga pendiente de confirmar." % importe.group(1))
+
+# ---------- Procesar correo del BANCO BBVA (transferencia interbancaria) ----------
+ES_MES = {'enero':1,'febrero':2,'marzo':3,'abril':4,'mayo':5,'junio':6,'julio':7,
+          'agosto':8,'septiembre':9,'setiembre':9,'octubre':10,'noviembre':11,'diciembre':12}
+
+def parse_bbva(body):
+    """Extrae los datos de un aviso de transferencia de BBVA (clientes@bbva.mx).
+    OJO: BBVA NO manda 'Clave de Rastreo' (solo 'Folio Internet') -> el cruce con ORAMI
+    se hace luego por monto+fecha (ver casar_recarga)."""
+    importe = re.search(r"Importe\s*\$?\s*([\d,]+\.\d{2})", body)
+    folio   = re.search(r"Folio Internet\s*:?\s*(\d+)", body)
+    if not (importe and folio):
+        return None
+    fecha   = re.search(r"Fecha de operaci[oó]n\s*:?\s*(\d{1,2}\s+de\s+[A-Za-zÁÉÍÓÚáéíóúÑñ]+\s+de\s+\d{4},?\s*\d{1,2}:\d{2}:\d{2}\s*[AaPp]\.?\s*[Mm]\.?)", body)
+    benef   = re.search(r"Nombre del beneficiario\s+(.+?)\s+Importe", body)
+    titular = re.search(r"Titular de la cuenta de retiro\s+(.+?)\s+Banco", body)
+    bancod  = re.search(r"Banco Destino\s+(.+?)\s+Cuenta", body)
+    cuenta  = re.search(r"Cuenta de dep[oó]sito\s+([\*\dxX]+)", body)
+    concepto= re.search(r"Concepto de pago\s+(.+?)\s+Folio", body)
+    fh = fecha.group(1).strip() if fecha else ""
+    dt = datetime.now()
+    m = re.match(r"(\d{1,2})\s+de\s+([A-Za-zÁÉÍÓÚáéíóúÑñ]+)\s+de\s+(\d{4}),?\s*(\d{1,2}):(\d{2}):(\d{2})\s*([AaPp])", fh)
+    if m:
+        mo = ES_MES.get(m.group(2).lower(), datetime.now().month)
+        hh = int(m.group(4)) % 12 + (12 if m.group(7).upper()=="P" else 0)
+        try: dt = datetime(int(m.group(3)), mo, int(m.group(1)), hh, int(m.group(5)), int(m.group(6)))
+        except Exception: dt = datetime.now()
+    return {
+        "folio": folio.group(1),
+        "monto": float(importe.group(1).replace(",", "")),
+        "importe_txt": importe.group(1),
+        "dt": dt, "fechaHora": fh,
+        "beneficiario": benef.group(1).strip() if benef else "CONSULTORIA EMPRESARIAL ORAMI S.C.",
+        "titular": titular.group(1).strip() if titular else "MIGUEL ANGEL VALLEJO FLORES",
+        "bancoDestino": bancod.group(1).strip() if bancod else "BAJIO",
+        "cuenta": cuenta.group(1).strip() if cuenta else "",
+        "concepto": concepto.group(1).strip() if concepto else "ORAMI",
+    }
+
+def procesar_bbva(body):
+    d = parse_bbva(body)
+    if not d:
+        log("correo BBVA sin importe/folio, ignorado"); return
+    doc_id = "rec-" + d["folio"]
+    ref_doc = db.collection("movimientos").document(doc_id)
+    if ref_doc.get().exists:
+        log("transferencia BBVA ya registrada:", d["folio"]); return
+    dt = d["dt"]
+    orden = (dt - datetime(1899,12,30)).total_seconds()/86400.0
+    MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
+    ref_doc.set({
+        "tipo":"abono","servicio":"Recarga (transferencia)",
+        "fecha":"%d-%s"%(dt.day, MESES[dt.month-1]),
+        "fechaFull":"%d-%s-%d"%(dt.day, MESES[dt.month-1], dt.year),
+        "hora":dt.strftime("%H:%M:%S"),"recibo":d["folio"],
+        "banco":"SPEI a ORAMI (BBVA) - Folio "+d["folio"],
+        "transferencia":d["monto"],"estado":"pendiente","orden":orden,"folioBanco":d["folio"],
+        "comprobante":{
+            "banco":"BBVA México","operacion":"Transferencia interbancaria SPEI (mismo día)",
+            "fechaHora":d["fechaHora"],"ordenante":d["titular"],
+            "beneficiario":d["beneficiario"],"clabe":d["cuenta"],"bancoDestino":d["bancoDestino"],
+            "importe":"$%s MN"%d["importe_txt"],"referencia":d["folio"],"concepto":d["concepto"],
+            "aplicacion":d["fechaHora"].split(",")[0] if d["fechaHora"] else "","clave":"(BBVA no envía clave de rastreo)"
+        }
+    })
+    log("recarga BBVA creada:", d["folio"], d["monto"])
+    enviar_push("Transferencia registrada", "Transferiste $%s a ORAMI. Recarga pendiente de confirmar." % d["importe_txt"])
+
+# ---------- Reenviar el aviso de BBVA a un tercero (ORAMI) ----------
+def _cuerpo_para_reenvio(msg):
+    if msg.is_multipart():
+        html=""; plain=""
+        for part in msg.walk():
+            if "attachment" in str(part.get("Content-Disposition")): continue
+            ct=part.get_content_type()
+            if ct not in ("text/html","text/plain"): continue
+            try: payload=part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8","ignore")
+            except Exception: continue
+            if ct=="text/html" and not html: html=payload
+            elif ct=="text/plain" and not plain: plain=payload
+        return ("html",html) if html else ("plain", plain or "(sin contenido)")
+    try: payload=msg.get_payload(decode=True).decode(msg.get_content_charset() or "utf-8","ignore")
+    except Exception: payload=str(msg.get_payload())
+    return ("html" if msg.get_content_type()=="text/html" else "plain", payload or "(sin contenido)")
+
+def reenviar(subj, msg, destino):
+    try:
+        sub, content = _cuerpo_para_reenvio(msg)
+        fwd = MIMEMultipart("alternative")
+        fwd["Subject"] = "Reenvío: " + (subj or "Transferencia BBVA")
+        fwd["From"] = IMAP_USER
+        fwd["To"] = destino
+        fwd["Reply-To"] = IMAP_USER
+        fwd.attach(MIMEText(content, sub, "utf-8"))
+        s = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ssl.create_default_context())
+        s.login(IMAP_USER, IMAP_PASS)
+        s.sendmail(IMAP_USER, [destino], fwd.as_string())
+        s.quit()
+        log("aviso BBVA reenviado a", destino)
+    except Exception as e:
+        log("reenvio BBVA fallo:", e)
 
 # ---------- Procesar recibo de FACEBOOK / META ----------
 def es_facebook(subj, body):
@@ -239,6 +345,25 @@ def casar_facebook(desc, monto, base, recibo):
         log("cargo Facebook creado desde ORAMI bajo id de referencia:", rid)
     return True
 
+def casar_recarga(monto, serial):
+    """Casa un 'SPEI Recibido' del reporte de ORAMI con una recarga PENDIENTE del banco.
+    BBVA no manda la clave de rastreo, por eso se empareja por monto bruto + fecha cercana
+    (evita duplicar la recarga). Devuelve True si caso una recarga pendiente."""
+    try:
+        pend = db.collection("movimientos").where("tipo","==","abono").where("estado","==","pendiente").stream()
+    except Exception as e:
+        log("query recargas pendientes fallo:", e); return False
+    cand=[]
+    for d in pend:
+        m=d.to_dict()
+        if abs(round(float(m.get("transferencia",0) or 0),2)-monto) < 0.01 and abs(float(m.get("orden",0))-serial) <= 6:
+            cand.append((abs(float(m.get("orden",0))-serial), d))
+    if not cand: return False
+    cand.sort(key=lambda x:x[0])
+    cand[0][1].reference.update({"estado":"verificada"})
+    log("recarga confirmada por ORAMI (monto+fecha):", monto)
+    return True
+
 def procesar_orami(data):
     rows = parse_xlsx(data)
     MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
@@ -262,15 +387,21 @@ def procesar_orami(data):
             base.update({"tipo":"cargo","monto":monto,"banco":merchant(desc),"estado":"verificada","origen":"orami"})
             db.collection("movimientos").document(doc_id).set(base, merge=True); nuevos+=1
         elif abono not in ('',None):
-            # buscar clave de rastreo en la descripcion para casar con la recarga del banco
+            montoab=round(float(abono),2); hecho=False
+            # 1) Banorte: casar por Clave de Rastreo (si viene en la descripcion)
             cve = re.search(r'Clave de Rastreo:\s*([A-Z0-9]+)', desc)
             if cve:
                 rec = db.collection("movimientos").document("rec-"+cve.group(1))
                 if rec.get().exists:
-                    rec.update({"estado":"verificada"}); verif+=1; continue
-            doc_id="mov-"+recibo
-            base.update({"tipo":"abono","transferencia":round(float(abono),2),"banco":"SPEI recibido","estado":"verificada"})
-            db.collection("movimientos").document(doc_id).set(base, merge=True); nuevos+=1
+                    rec.update({"estado":"verificada"}); verif+=1; hecho=True
+            # 2) BBVA (sin clave): casar por monto bruto + fecha con una recarga pendiente
+            if not hecho and casar_recarga(montoab, serial):
+                verif+=1; hecho=True
+            # 3) Si no caso con ninguna recarga del banco, crear el abono desde ORAMI
+            if not hecho:
+                doc_id="mov-"+recibo
+                base.update({"tipo":"abono","transferencia":montoab,"banco":"SPEI recibido","estado":"verificada"})
+                db.collection("movimientos").document(doc_id).set(base, merge=True); nuevos+=1
     log(f"ORAMI procesado: {nuevos} movimientos, {verif} recargas verificadas, {verif_fb} cargos Facebook confirmados")
     extra = f" y {verif_fb} cargos de Facebook confirmados" if verif_fb else ""
     enviar_push("Estado de cuenta de ORAMI",
@@ -294,7 +425,12 @@ def main():
         try:
             xlsx = get_xlsx_attachment(msg)
             body = get_body(msg)
-            if "banorte" in frm or ("transferencia" in subj.lower() and "spei" in subj.lower()):
+            es_bbva = ("bbva" in frm) or ("interbancaria" in subj.lower())
+            es_banorte = ("banorte" in frm) or ("transferencia" in subj.lower() and "spei" in subj.lower())
+            if es_bbva:
+                procesar_bbva(body)
+                reenviar(subj, msg, REENVIO_BBVA)   # reenviar el aviso de BBVA a ORAMI
+            elif es_banorte:
                 procesar_banco(body)
             elif xlsx is not None:
                 procesar_orami(xlsx)
