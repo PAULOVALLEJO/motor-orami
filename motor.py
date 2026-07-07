@@ -345,23 +345,30 @@ def casar_facebook(desc, monto, base, recibo):
         log("cargo Facebook creado desde ORAMI bajo id de referencia:", rid)
     return True
 
-def casar_recarga(monto, serial):
-    """Casa un 'SPEI Recibido' del reporte de ORAMI con una recarga PENDIENTE del banco.
-    BBVA no manda la clave de rastreo, por eso se empareja por monto bruto + fecha cercana
-    (evita duplicar la recarga). Devuelve True si caso una recarga pendiente."""
+def casar_recarga(monto, serial, recibo_orami):
+    """Casa un 'SPEI Recibido' del reporte de ORAMI con una recarga del banco.
+    BBVA no manda clave de rastreo -> se empareja por monto bruto + fecha cercana.
+    IDEMPOTENTE: sella la recarga casada con el recibo de ORAMI; si el reporte se
+    REPROCESA (ORAMI lo reenvia o el motor corre otra vez), reconoce que esa linea ya
+    se caso y NO crea un duplicado. Devuelve True si la linea ya quedo manejada."""
     try:
-        pend = db.collection("movimientos").where("tipo","==","abono").where("estado","==","pendiente").stream()
+        abonos = list(db.collection("movimientos").where("tipo","==","abono").stream())
     except Exception as e:
-        log("query recargas pendientes fallo:", e); return False
+        log("query recargas fallo:", e); return False
+    # 1) idempotencia: ya hay una recarga sellada con este mismo recibo de ORAMI -> no dupliques
+    for d in abonos:
+        if str(d.to_dict().get("reciboOrami","")) == str(recibo_orami):
+            return True
+    # 2) casar una recarga PENDIENTE por monto + fecha; sellarla con el recibo de ORAMI
     cand=[]
-    for d in pend:
+    for d in abonos:
         m=d.to_dict()
-        if abs(round(float(m.get("transferencia",0) or 0),2)-monto) < 0.01 and abs(float(m.get("orden",0))-serial) <= 6:
+        if m.get("estado")=="pendiente" and abs(round(float(m.get("transferencia",0) or 0),2)-monto) < 0.01 and abs(float(m.get("orden",0))-serial) <= 6:
             cand.append((abs(float(m.get("orden",0))-serial), d))
     if not cand: return False
     cand.sort(key=lambda x:x[0])
-    cand[0][1].reference.update({"estado":"verificada"})
-    log("recarga confirmada por ORAMI (monto+fecha):", monto)
+    cand[0][1].reference.update({"estado":"verificada","reciboOrami":str(recibo_orami)})
+    log("recarga confirmada por ORAMI (monto+fecha):", monto, "recibo", recibo_orami)
     return True
 
 def procesar_orami(data):
@@ -394,8 +401,8 @@ def procesar_orami(data):
                 rec = db.collection("movimientos").document("rec-"+cve.group(1))
                 if rec.get().exists:
                     rec.update({"estado":"verificada"}); verif+=1; hecho=True
-            # 2) BBVA (sin clave): casar por monto bruto + fecha con una recarga pendiente
-            if not hecho and casar_recarga(montoab, serial):
+            # 2) BBVA (sin clave): casar por monto bruto + fecha (idempotente por recibo de ORAMI)
+            if not hecho and casar_recarga(montoab, serial, recibo):
                 verif+=1; hecho=True
             # 3) Si no caso con ninguna recarga del banco, crear el abono desde ORAMI
             if not hecho:
