@@ -345,6 +345,31 @@ def casar_facebook(desc, monto, base, recibo):
         log("cargo Facebook creado desde ORAMI bajo id de referencia:", rid)
     return True
 
+def casar_facebook_por_monto(monto, serial, recibo_orami):
+    """Para cargos de Facebook que ORAMI reporta SIN referencia (descripcion 'FACEBOOK MEXICO'
+    o 'METAPAY'): los casa con un recibo de Meta (fb-<ref>) PENDIENTE del MISMO monto exacto y
+    fecha cercana. Solo toca recibos PENDIENTES: los ya confirmados por su propia referencia
+    FACEBK no se tocan, asi NO se mezclan dos cargos distintos del mismo monto (p.ej. dos de
+    $4,922.78, uno FACEBK y otro FACEBOOK MEXICO = dos cargos reales). Idempotente por reciboOrami."""
+    try:
+        fbs = list(db.collection("movimientos").where("origen","==","facebook").stream())
+    except Exception as e:
+        log("query recibos fb fallo:", e); return False
+    # idempotencia: si un recibo fb ya fue sellado con este recibo de ORAMI, ya se caso
+    for d in fbs:
+        if str(d.to_dict().get("reciboOrami","")) == str(recibo_orami):
+            return True
+    cand=[]
+    for d in fbs:
+        m=d.to_dict()
+        if m.get("estado")=="pendiente" and abs(round(float(m.get("monto",0) or 0),2)-monto) < 0.01 and abs(float(m.get("orden",0))-serial) <= 7:
+            cand.append((abs(float(m.get("orden",0))-serial), d))
+    if not cand: return False
+    cand.sort(key=lambda x:x[0])
+    cand[0][1].reference.update({"estado":"verificada","confirmadoOrami":True,"reciboOrami":str(recibo_orami)})
+    log("cargo Facebook (sin ref) confirmado por ORAMI (monto+fecha):", monto, "recibo", recibo_orami)
+    return True
+
 def casar_recarga(monto, serial, recibo_orami):
     """Casa un 'SPEI Recibido' del reporte de ORAMI con una recarga del banco.
     BBVA no manda clave de rastreo -> se empareja por monto bruto + fecha cercana.
@@ -387,9 +412,13 @@ def procesar_orami(data):
               "recibo":recibo}
         if cargo not in ('',None):
             monto=round(float(cargo),2)
-            # Si es cargo de Facebook, intentar casarlo con el recibo de Meta ya capturado (no duplicar)
-            if servicio(desc)=='Facebook' and casar_facebook(desc, monto, base, recibo):
-                verif_fb+=1; continue
+            if servicio(desc)=='Facebook':
+                # 1) casar por referencia FACEBK *xxx (lo mas confiable)
+                if casar_facebook(desc, monto, base, recibo):
+                    verif_fb+=1; continue
+                # 2) sin referencia (FACEBOOK MEXICO / METAPAY): casar un recibo fb PENDIENTE por monto
+                if casar_facebook_por_monto(monto, serial, recibo):
+                    verif_fb+=1; continue
             doc_id="mov-"+recibo
             base.update({"tipo":"cargo","monto":monto,"banco":merchant(desc),"estado":"verificada","origen":"orami"})
             db.collection("movimientos").document(doc_id).set(base, merge=True); nuevos+=1
