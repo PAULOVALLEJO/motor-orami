@@ -384,11 +384,14 @@ def casar_recarga(monto, serial, recibo_orami):
     for d in abonos:
         if str(d.to_dict().get("reciboOrami","")) == str(recibo_orami):
             return True
-    # 2) casar una recarga PENDIENTE por monto + fecha; sellarla con el recibo de ORAMI
+    # 2) casar por monto + fecha una recarga PENDIENTE, o una recarga del banco (BBVA, con
+    #    folioBanco) que haya quedado verificada SIN sellar -> asi el reproceso no la duplica.
     cand=[]
     for d in abonos:
         m=d.to_dict()
-        if m.get("estado")=="pendiente" and abs(round(float(m.get("transferencia",0) or 0),2)-monto) < 0.01 and abs(float(m.get("orden",0))-serial) <= 6:
+        sellada = str(m.get("reciboOrami","")).strip()
+        disponible = (m.get("estado")=="pendiente") or (m.get("folioBanco") and not sellada)
+        if disponible and abs(round(float(m.get("transferencia",0) or 0),2)-monto) < 0.01 and abs(float(m.get("orden",0))-serial) <= 6:
             cand.append((abs(float(m.get("orden",0))-serial), d))
     if not cand: return False
     cand.sort(key=lambda x:x[0])
