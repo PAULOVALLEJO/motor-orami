@@ -220,7 +220,7 @@ def reenviar(subj, msg, destino):
         fwd["To"] = destino
         fwd["Reply-To"] = IMAP_USER
         fwd.attach(MIMEText(content, sub, "utf-8"))
-        s = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ssl.create_default_context())
+        s = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ssl.create_default_context(), timeout=30)
         s.login(IMAP_USER, IMAP_PASS)
         s.sendmail(IMAP_USER, [destino], fwd.as_string())
         s.quit()
@@ -446,7 +446,7 @@ def procesar_orami(data):
 # ---------- Main ----------
 def main():
     ctx = ssl.create_default_context()
-    M = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, ssl_context=ctx)
+    M = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, ssl_context=ctx, timeout=60)
     M.login(IMAP_USER, IMAP_PASS)
     M.select("INBOX")
     typ, data = M.search(None, "UNSEEN")
