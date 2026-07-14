@@ -166,13 +166,14 @@ def parse_bbva(body):
     }
 
 def procesar_bbva(body):
+    """Devuelve True SOLO si creo una recarga nueva (para reenviar/notificar una sola vez)."""
     d = parse_bbva(body)
     if not d:
-        log("correo BBVA sin importe/folio, ignorado"); return
+        log("correo BBVA sin importe/folio, ignorado"); return False
     doc_id = "rec-" + d["folio"]
     ref_doc = db.collection("movimientos").document(doc_id)
     if ref_doc.get().exists:
-        log("transferencia BBVA ya registrada:", d["folio"]); return
+        log("transferencia BBVA ya registrada:", d["folio"]); return False
     dt = d["dt"]
     orden = (dt - datetime(1899,12,30)).total_seconds()/86400.0
     MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
@@ -193,6 +194,7 @@ def procesar_bbva(body):
     })
     log("recarga BBVA creada:", d["folio"], d["monto"])
     enviar_push("Transferencia registrada", "Transferiste $%s a ORAMI. Recarga pendiente de confirmar." % d["importe_txt"])
+    return True
 
 # ---------- Reenviar el aviso de BBVA a un tercero (ORAMI) ----------
 def _cuerpo_para_reenvio(msg):
@@ -453,8 +455,21 @@ def main():
     M.login(IMAP_USER, IMAP_PASS)
     M.select("INBOX")
     typ, data = M.search(None, "UNSEEN")
-    ids = data[0].split()
-    log(f"correos nuevos: {len(ids)}")
+    ids = list(data[0].split())
+    # Ademas: correos del BANCO de los ultimos 3 dias AUNQUE ya esten leidos. Outlook los
+    # marca leidos con la vista previa antes de que el motor (cada 15 min) alcance a leerlos.
+    # El procesamiento es idempotente (rec-<folio>/rec-<clave>), asi que reprocesar no duplica.
+    seen_set = set(ids)
+    since = (datetime.now() - timedelta(days=3)).strftime("%d-%b-%Y")
+    for crit in ('FROM "bbva.mx"', 'FROM "banorte"'):
+        try:
+            typ, d = M.search(None, '(%s SINCE %s)' % (crit, since))
+            for n in d[0].split():
+                if n not in seen_set:
+                    ids.append(n); seen_set.add(n)
+        except Exception as e:
+            log("busqueda de correos del banco fallo:", e)
+    log(f"correos a revisar: {len(ids)} (no leidos + banco de los ultimos 3 dias)")
     for num in ids:
         typ, d = M.fetch(num, "(RFC822)")
         msg = email.message_from_bytes(d[0][1])
@@ -467,8 +482,8 @@ def main():
             es_bbva = ("bbva" in frm) or ("interbancaria" in subj.lower())
             es_banorte = ("banorte" in frm) or ("transferencia" in subj.lower() and "spei" in subj.lower())
             if es_bbva:
-                procesar_bbva(body)
-                reenviar(subj, msg, REENVIO_BBVA)   # reenviar el aviso de BBVA a ORAMI
+                if procesar_bbva(body):                 # solo si es una recarga NUEVA
+                    reenviar(subj, msg, REENVIO_BBVA)    # reenviar el aviso a ORAMI una sola vez
             elif es_banorte:
                 procesar_banco(body)
             elif xlsx is not None:
