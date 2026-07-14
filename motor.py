@@ -418,6 +418,31 @@ def casar_recarga(monto, serial, recibo_orami):
     log("recarga confirmada por ORAMI (monto+fecha):", monto, "recibo", recibo_orami)
     return True
 
+def dedup_recargas():
+    """Red de seguridad: si una recarga del banco (rec-, con folioBanco/comprobante) y un
+    'SPEI recibido' de ORAMI (mov-) quedaron como DOS docs del mismo monto y dia (p.ej.
+    porque el monto estuvo mal leido cuando llego el reporte), los fusiona: sella el rec-
+    con el recibo de ORAMI, lo marca verificada y borra el mov-. Se emparejan 1 a 1
+    (zip), asi dos transferencias reales del mismo monto/dia no se pierden."""
+    try:
+        abonos = list(db.collection("movimientos").where("tipo","==","abono").stream())
+    except Exception as e:
+        log("dedup: query fallo:", e); return
+    grupos = {}
+    for d in abonos:
+        m = d.to_dict()
+        key = (round(float(m.get("transferencia",0) or 0),2), str(m.get("fechaFull")))
+        grupos.setdefault(key, []).append(d)
+    for key, g in grupos.items():
+        if len(g) < 2: continue
+        bancos = [d for d in g if d.to_dict().get("folioBanco") or d.to_dict().get("comprobante")]
+        movs   = [d for d in g if d.id.startswith("mov-") and not d.to_dict().get("folioBanco")]
+        for b, mv in zip(bancos, movs):
+            rec_orami = str(mv.to_dict().get("recibo",""))
+            b.reference.update({"estado":"verificada","reciboOrami":rec_orami})
+            mv.reference.delete()
+            log("dedup: recarga duplicada fusionada — conservo %s, borro %s (reciboOrami=%s)" % (b.id, mv.id, rec_orami))
+
 def procesar_orami(data):
     rows = parse_xlsx(data)
     MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
@@ -520,6 +545,10 @@ def main():
         except Exception as e:
             log("ERROR procesando correo:", e)
         M.store(num, "+FLAGS", "\\Seen")
+    try:
+        dedup_recargas()   # red de seguridad contra recargas dobles
+    except Exception as e:
+        log("dedup fallo:", e)
     try:
         db.collection("tokens").document("zdebug_motor").set(dbg)
     except Exception as e:
