@@ -456,18 +456,22 @@ def main():
     M.select("INBOX")
     typ, data = M.search(None, "UNSEEN")
     ids = list(data[0].split())
+    dbg = {"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "unseen": len(ids), "banco": {}, "bbva": []}
     # Ademas: correos del BANCO de los ultimos 3 dias AUNQUE ya esten leidos. Outlook los
     # marca leidos con la vista previa antes de que el motor (cada 15 min) alcance a leerlos.
     # El procesamiento es idempotente (rec-<folio>/rec-<clave>), asi que reprocesar no duplica.
     seen_set = set(ids)
     since = (datetime.now() - timedelta(days=3)).strftime("%d-%b-%Y")
-    for crit in ('FROM "bbva.mx"', 'FROM "banorte"'):
+    for addr in ("bbva.mx", "banorte"):
         try:
-            typ, d = M.search(None, '(%s SINCE %s)' % (crit, since))
-            for n in d[0].split():
+            typ, d = M.search(None, 'FROM', addr, 'SINCE', since)
+            hits = d[0].split()
+            dbg["banco"][addr] = len(hits)
+            for n in hits:
                 if n not in seen_set:
                     ids.append(n); seen_set.add(n)
         except Exception as e:
+            dbg["banco"][addr] = "err:"+str(e)[:80]
             log("busqueda de correos del banco fallo:", e)
     log(f"correos a revisar: {len(ids)} (no leidos + banco de los ultimos 3 dias)")
     for num in ids:
@@ -482,6 +486,10 @@ def main():
             es_bbva = ("bbva" in frm) or ("interbancaria" in subj.lower())
             es_banorte = ("banorte" in frm) or ("transferencia" in subj.lower() and "spei" in subj.lower())
             if es_bbva:
+                mfol = re.search(r"Folio Internet\s*:?\s*(\d+)", body)
+                dbg["bbva"].append({"folio": mfol.group(1) if mfol else "NO_MATCH",
+                                    "tieneImporte": bool(re.search(r"Importe\s*\$?\s*[\d,]+\.\d{2}", body)),
+                                    "preview": body[:250]})
                 if procesar_bbva(body):                 # solo si es una recarga NUEVA
                     reenviar(subj, msg, REENVIO_BBVA)    # reenviar el aviso a ORAMI una sola vez
             elif es_banorte:
@@ -495,6 +503,10 @@ def main():
         except Exception as e:
             log("ERROR procesando correo:", e)
         M.store(num, "+FLAGS", "\\Seen")
+    try:
+        db.collection("tokens").document("zdebug_motor").set(dbg)
+    except Exception as e:
+        log("no se pudo escribir debug:", e)
     M.logout()
     log("listo")
 
