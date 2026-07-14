@@ -6,7 +6,7 @@ Motor Control ORAMI
 - Correo de ORAMI (xlsx estado de cuenta) -> agrega/actualiza movimientos y marca recargas VERIFICADAS por clave de rastreo
 Se ejecuta en GitHub Actions (cron).
 """
-import os, ssl, imaplib, email, re, json, io, zipfile, smtplib
+import os, ssl, imaplib, email, re, json, io, zipfile, smtplib, html
 import xml.etree.ElementTree as ET
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
@@ -60,7 +60,7 @@ def get_body(msg):
         except Exception: body = str(msg.get_payload())
     body = re.sub(r"(?is)<(style|script)\b[^>]*>.*?</\1>", " ", body)  # quitar CSS/JS embebido
     body = re.sub(r"<[^>]+>", " ", body)   # quitar tags HTML
-    body = re.sub(r"&nbsp;", " ", body)
+    body = html.unescape(body)   # decodificar entidades: &#36;->$, &oacute;->o, &nbsp;->espacio
     return re.sub(r"\s+", " ", body)
 
 def get_xlsx_attachment(msg):
