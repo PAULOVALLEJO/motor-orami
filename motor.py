@@ -58,6 +58,7 @@ def get_body(msg):
     else:
         try: body = msg.get_payload(decode=True).decode(msg.get_content_charset() or "utf-8", "ignore")
         except Exception: body = str(msg.get_payload())
+    body = re.sub(r"(?is)<(style|script)\b[^>]*>.*?</\1>", " ", body)  # quitar CSS/JS embebido
     body = re.sub(r"<[^>]+>", " ", body)   # quitar tags HTML
     body = re.sub(r"&nbsp;", " ", body)
     return re.sub(r"\s+", " ", body)
@@ -135,10 +136,15 @@ def parse_bbva(body):
     """Extrae los datos de un aviso de transferencia de BBVA (clientes@bbva.mx).
     OJO: BBVA NO manda 'Clave de Rastreo' (solo 'Folio Internet') -> el cruce con ORAMI
     se hace luego por monto+fecha (ver casar_recarga)."""
-    importe = re.search(r"Importe\s*\$?\s*([\d,]+\.\d{2})", body)
     folio   = re.search(r"Folio Internet\s*:?\s*(\d+)", body)
-    if not (importe and folio):
+    # Importe tolerante: BBVA a veces separa los centavos (superindice) -> permite espacios
+    # alrededor del punto y el simbolo $ opcional. Ej: "Importe $ 32,000.00" / "32,000 .00".
+    mimp    = re.search(r"Importe[^\d]*?([\d][\d,]*)(?:\s*\.\s*(\d{2}))?(?!\d)", body)
+    if not (mimp and folio):
         return None
+    entero = mimp.group(1).replace(",", "").replace(" ", "")
+    monto  = float(entero + "." + (mimp.group(2) or "00"))
+    importe_txt = "{:,.2f}".format(monto)
     fecha   = re.search(r"Fecha de operaci[oó]n\s*:?\s*(\d{1,2}\s+de\s+[A-Za-zÁÉÍÓÚáéíóúÑñ]+\s+de\s+\d{4},?\s*\d{1,2}:\d{2}:\d{2}\s*[AaPp]\.?\s*[Mm]\.?)", body)
     benef   = re.search(r"Nombre del beneficiario\s+(.+?)\s+Importe", body)
     titular = re.search(r"Titular de la cuenta de retiro\s+(.+?)\s+Banco", body)
@@ -155,8 +161,8 @@ def parse_bbva(body):
         except Exception: dt = datetime.now()
     return {
         "folio": folio.group(1),
-        "monto": float(importe.group(1).replace(",", "")),
-        "importe_txt": importe.group(1),
+        "monto": monto,
+        "importe_txt": importe_txt,
         "dt": dt, "fechaHora": fh,
         "beneficiario": benef.group(1).strip() if benef else "CONSULTORIA EMPRESARIAL ORAMI S.C.",
         "titular": titular.group(1).strip() if titular else "MIGUEL ANGEL VALLEJO FLORES",
