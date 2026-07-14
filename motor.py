@@ -178,12 +178,10 @@ def procesar_bbva(body):
         log("correo BBVA sin importe/folio, ignorado"); return False
     doc_id = "rec-" + d["folio"]
     ref_doc = db.collection("movimientos").document(doc_id)
-    if ref_doc.get().exists:
-        log("transferencia BBVA ya registrada:", d["folio"]); return False
     dt = d["dt"]
     orden = (dt - datetime(1899,12,30)).total_seconds()/86400.0
     MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
-    ref_doc.set({
+    payload = {
         "tipo":"abono","servicio":"Recarga (transferencia)",
         "fecha":"%d-%s"%(dt.day, MESES[dt.month-1]),
         "fechaFull":"%d-%s-%d"%(dt.day, MESES[dt.month-1], dt.year),
@@ -197,7 +195,20 @@ def procesar_bbva(body):
             "importe":"$%s MN"%d["importe_txt"],"referencia":d["folio"],"concepto":d["concepto"],
             "aplicacion":d["fechaHora"].split(",")[0] if d["fechaHora"] else "","clave":"(BBVA no envía clave de rastreo)"
         }
-    })
+    }
+    snap = ref_doc.get()
+    if snap.exists:
+        cur = snap.to_dict()
+        # Auto-correccion: si el monto/fecha guardados difieren de lo leido ahora (p.ej. se
+        # creo con un parser viejo que leyo mal el importe), lo corrige sin duplicar.
+        if round(float(cur.get("transferencia",0) or 0),2) != round(d["monto"],2):
+            payload["estado"] = cur.get("estado","pendiente")   # no revertir si ORAMI ya la verifico
+            ref_doc.set(payload, merge=True)
+            log("recarga BBVA CORREGIDA:", d["folio"], d["monto"])
+        else:
+            log("transferencia BBVA ya registrada:", d["folio"])
+        return False
+    ref_doc.set(payload)
     log("recarga BBVA creada:", d["folio"], d["monto"])
     enviar_push("Transferencia registrada", "Transferiste $%s a ORAMI. Recarga pendiente de confirmar." % d["importe_txt"])
     return True
@@ -493,9 +504,9 @@ def main():
             es_banorte = ("banorte" in frm) or ("transferencia" in subj.lower() and "spei" in subj.lower())
             if es_bbva:
                 mfol = re.search(r"Folio Internet\s*:?\s*(\d+)", body)
+                _ix = body.find("Importe")
                 dbg["bbva"].append({"folio": mfol.group(1) if mfol else "NO_MATCH",
-                                    "tieneImporte": bool(re.search(r"Importe\s*\$?\s*[\d,]+\.\d{2}", body)),
-                                    "preview": body[:250]})
+                                    "importeCtx": (body[_ix:_ix+130] if _ix>=0 else "NO_Importe")})
                 if procesar_bbva(body):                 # solo si es una recarga NUEVA
                     reenviar(subj, msg, REENVIO_BBVA)    # reenviar el aviso a ORAMI una sola vez
             elif es_banorte:
