@@ -246,23 +246,36 @@ def _conectar_smtp():
             errores.append("%s:%s -> %s" % (modo, puerto, e))
     raise RuntimeError(" | ".join(errores))
 
-def reenviar(subj, msg, destino):
-    """Devuelve True si se envio; si falla devuelve el texto del error (para debug)."""
+def reenviar_aviso(destino, d):
+    """Manda a ORAMI un AVISO PROPIO con los datos de la transferencia (no el correo de
+    BBVA tal cual: el filtro del servidor lo clasifica como SPAM/phishing por traer el
+    contenido del banco desde otro remitente — error 550). Devuelve True o el error."""
     try:
-        sub, content = _cuerpo_para_reenvio(msg)
-        fwd = MIMEMultipart("alternative")
-        fwd["Subject"] = "Reenvío: " + (subj or "Transferencia BBVA")
+        texto = (
+            "Aviso de transferencia realizada\n\n"
+            "Se realizó una transferencia SPEI a %s.\n\n"
+            "   Importe:        $%s MXN\n"
+            "   Fecha:          %s\n"
+            "   Folio Internet: %s\n"
+            "   Concepto:       %s\n"
+            "   Ordenante:      %s\n"
+            "   Banco origen:   BBVA México\n\n"
+            "Mensaje automático del sistema Control ORAMI de Nacionalíssimo.\n"
+            "Cualquier duda, responder a este correo."
+        ) % (d["beneficiario"], d["importe_txt"], d["fechaHora"] or d["dt"].strftime("%d/%m/%Y %H:%M"),
+             d["folio"], d["concepto"], d["titular"])
+        fwd = MIMEText(texto, "plain", "utf-8")
+        fwd["Subject"] = "Transferencia a ORAMI - $%s - folio %s" % (d["importe_txt"], d["folio"])
         fwd["From"] = IMAP_USER
         fwd["To"] = destino
         fwd["Reply-To"] = IMAP_USER
-        fwd.attach(MIMEText(content, sub, "utf-8"))
         s = _conectar_smtp()
         s.sendmail(IMAP_USER, [destino], fwd.as_string())
         s.quit()
-        log("aviso BBVA reenviado a", destino)
+        log("aviso de transferencia enviado a", destino)
         return True
     except Exception as e:
-        log("reenvio BBVA fallo:", e)
+        log("aviso a ORAMI fallo:", e)
         return str(e)[:200]
 
 # ---------- Procesar recibo de FACEBOOK / META ----------
@@ -558,7 +571,8 @@ def main():
                     rdoc = db.collection("movimientos").document("rec-" + mfol.group(1))
                     rsnap = rdoc.get()
                     if rsnap.exists and not rsnap.to_dict().get("reenviadoOrami"):
-                        res = reenviar(subj, msg, REENVIO_BBVA)
+                        datos = parse_bbva(body)
+                        res = reenviar_aviso(REENVIO_BBVA, datos) if datos else "sin datos parseables"
                         if res is True:
                             rdoc.update({"reenviadoOrami": True})
                             dbg["bbva"][-1]["reenvio"] = "ok"
