@@ -230,7 +230,24 @@ def _cuerpo_para_reenvio(msg):
     except Exception: payload=str(msg.get_payload())
     return ("html" if msg.get_content_type()=="text/html" else "plain", payload or "(sin contenido)")
 
+def _conectar_smtp():
+    """Intenta SSL directo (465) y si falla, STARTTLS (587). Devuelve la sesion logueada."""
+    errores = []
+    for modo, puerto in (("ssl", SMTP_PORT), ("starttls", 587)):
+        try:
+            if modo == "ssl":
+                s = smtplib.SMTP_SSL(SMTP_HOST, puerto, context=ssl.create_default_context(), timeout=30)
+            else:
+                s = smtplib.SMTP(SMTP_HOST, puerto, timeout=30)
+                s.ehlo(); s.starttls(context=ssl.create_default_context()); s.ehlo()
+            s.login(IMAP_USER, IMAP_PASS)
+            return s
+        except Exception as e:
+            errores.append("%s:%s -> %s" % (modo, puerto, e))
+    raise RuntimeError(" | ".join(errores))
+
 def reenviar(subj, msg, destino):
+    """Devuelve True si se envio; si falla devuelve el texto del error (para debug)."""
     try:
         sub, content = _cuerpo_para_reenvio(msg)
         fwd = MIMEMultipart("alternative")
@@ -239,13 +256,14 @@ def reenviar(subj, msg, destino):
         fwd["To"] = destino
         fwd["Reply-To"] = IMAP_USER
         fwd.attach(MIMEText(content, sub, "utf-8"))
-        s = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ssl.create_default_context(), timeout=30)
-        s.login(IMAP_USER, IMAP_PASS)
+        s = _conectar_smtp()
         s.sendmail(IMAP_USER, [destino], fwd.as_string())
         s.quit()
         log("aviso BBVA reenviado a", destino)
+        return True
     except Exception as e:
         log("reenvio BBVA fallo:", e)
+        return str(e)[:200]
 
 # ---------- Procesar recibo de FACEBOOK / META ----------
 def es_facebook(subj, body):
@@ -532,8 +550,20 @@ def main():
                 _ix = body.find("Importe")
                 dbg["bbva"].append({"folio": mfol.group(1) if mfol else "NO_MATCH",
                                     "importeCtx": (body[_ix:_ix+130] if _ix>=0 else "NO_Importe")})
-                if procesar_bbva(body):                 # solo si es una recarga NUEVA
-                    reenviar(subj, msg, REENVIO_BBVA)    # reenviar el aviso a ORAMI una sola vez
+                procesar_bbva(body)
+                # Reenviar a ORAMI con REINTENTO: se marca reenviadoOrami en la recarga solo
+                # cuando el envio sale bien; mientras no, se reintenta en cada corrida (los
+                # correos del banco se re-escanean 3 dias, asi que hay muchas oportunidades).
+                if mfol:
+                    rdoc = db.collection("movimientos").document("rec-" + mfol.group(1))
+                    rsnap = rdoc.get()
+                    if rsnap.exists and not rsnap.to_dict().get("reenviadoOrami"):
+                        res = reenviar(subj, msg, REENVIO_BBVA)
+                        if res is True:
+                            rdoc.update({"reenviadoOrami": True})
+                            dbg["bbva"][-1]["reenvio"] = "ok"
+                        else:
+                            dbg["bbva"][-1]["reenvio"] = res
             elif es_banorte:
                 procesar_banco(body)
             elif xlsx is not None:
