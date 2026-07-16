@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.application import MIMEApplication
 from datetime import datetime, timedelta
 
 import firebase_admin
@@ -37,6 +38,157 @@ def log(*a): print("[motor]", *a, flush=True)
 
 def comision(t): return round((t/1.16)*0.055, 2)
 def abono_neto(t): return round(t - comision(t), 2)
+
+# ---------- CIERRE MENSUAL ----------
+# Al iniciar cada mes: genera el estado de cuenta del mes anterior (Excel), lo manda al
+# correo, borra los movimientos VERIFICADOS archivados y arrastra el saldo final como
+# saldo inicial del mes nuevo (config/cierre, que la app lee en vivo). Los PENDIENTES se
+# pasan al mes nuevo sin archivar. Los ids archivados se guardan en config/archivados
+# para que un reporte reenviado de ORAMI no los resucite.
+BOOTSTRAP_SALDO = 23833.71   # saldo real al 1-jun-2026 (reconciliado con ORAMI)
+BOOTSTRAP_MES   = "2026-06"  # primer mes administrado por el cierre
+
+MESES_NOMBRE = ["","Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio",
+                "Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
+ARCHIVADOS = set()   # ids ya archivados en cierres previos (no re-crearlos jamas)
+
+def ahora_mx():
+    """Hora de Mexico (UTC-6 fijo); los runners de GitHub estan en UTC."""
+    return datetime.utcnow() - timedelta(hours=6)
+
+def _serial(dt): return (dt - datetime(1899,12,30)).total_seconds()/86400.0
+def _mes_inicio(mes): a,m = mes.split("-"); return datetime(int(a), int(m), 1)
+def _mes_siguiente(mes):
+    a, m = int(mes[:4]), int(mes[5:7]) + 1
+    if m == 13: a += 1; m = 1
+    return "%04d-%02d" % (a, m)
+def _mes_titulo(mes): return "%s %s" % (MESES_NOMBRE[int(mes[5:7])], mes[:4])
+
+def cargar_cierre():
+    ref = db.collection("config").document("cierre")
+    s = ref.get()
+    if s.exists: return s.to_dict()
+    datos = {"saldoInicial": BOOTSTRAP_SALDO, "mesActual": BOOTSTRAP_MES,
+             "fechaCierre": _serial(_mes_inicio(BOOTSTRAP_MES)),
+             "actualizado": ahora_mx().strftime("%Y-%m-%d %H:%M:%S")}
+    ref.set(datos)
+    log("config/cierre inicializado:", datos)
+    return datos
+
+def cargar_archivados():
+    global ARCHIVADOS
+    try:
+        s = db.collection("config").document("archivados").get()
+        ARCHIVADOS = set((s.to_dict() or {}).get("ids", [])) if s.exists else set()
+    except Exception as e:
+        log("no se pudieron cargar archivados:", e); ARCHIVADOS = set()
+
+def ya_archivado(doc_id):
+    if doc_id in ARCHIVADOS:
+        log("omitido (pertenece a un mes ya cerrado):", doc_id); return True
+    return False
+
+def _excel_mes(archivar, mes, saldo_ini, tot_ab, tot_ca, saldo_fin):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    wb = Workbook(); ws = wb.active; ws.title = mes
+    neg = Font(bold=True)
+    ws.append(["Control ORAMI - Estado de cuenta", _mes_titulo(mes)]); ws["A1"].font = neg
+    ws.append(["Saldo inicial del mes", saldo_ini])
+    ws.append([])
+    ws.append(["Fecha","Hora","Tipo","Servicio","Detalle","Recibo","Recibo ORAMI",
+               "Transferencia","Comisión","Abono neto","Cargo","Estado"])
+    for c in ws[4]: c.font = neg
+    for d in sorted(archivar, key=lambda x: float(x.to_dict().get("orden",0))):
+        m = d.to_dict()
+        if m.get("tipo") == "abono":
+            t = float(m.get("transferencia",0) or 0)
+            ws.append([m.get("fechaFull",""), m.get("hora",""), "Recarga", m.get("servicio",""),
+                       m.get("banco",""), str(m.get("recibo","")), str(m.get("reciboOrami","")),
+                       t, comision(t), abono_neto(t), "", m.get("estado","")])
+        else:
+            ws.append([m.get("fechaFull",""), m.get("hora",""), "Cargo", m.get("servicio",""),
+                       m.get("banco",""), str(m.get("recibo","")), str(m.get("reciboOrami","")),
+                       "", "", "", float(m.get("monto",0) or 0), m.get("estado","")])
+    ws.append([])
+    ws.append(["","","","","","","Total recargas netas", "", "", tot_ab, "", ""])
+    ws.append(["","","","","","","Total cargos", "", "", "", tot_ca, ""])
+    ws.append(["","","","","","","SALDO FINAL DEL MES", "", "", saldo_fin, "", ""])
+    for fila in (ws.max_row-2, ws.max_row-1, ws.max_row):
+        for c in ws[fila]: c.font = neg
+    anchos = [12,10,9,20,38,16,16,14,11,12,12,11]
+    for i,a in enumerate(anchos,1):
+        ws.column_dimensions[ws.cell(row=4,column=i).column_letter].width = a
+    for fila in ws.iter_rows(min_row=2):
+        for c in fila:
+            if isinstance(c.value,(int,float)): c.number_format = "#,##0.00"
+    buf = io.BytesIO(); wb.save(buf)
+    return buf.getvalue()
+
+def enviar_cierre(mes, adjunto, nombre, resumen):
+    """Manda el estado de cuenta del mes al buzon. Si falla LANZA excepcion -> el cierre
+    se aborta y se reintenta en la siguiente corrida (nunca se borra sin respaldo enviado)."""
+    msg = MIMEMultipart()
+    msg["Subject"] = "Cierre ORAMI - %s" % _mes_titulo(mes)
+    msg["From"] = IMAP_USER; msg["To"] = IMAP_USER
+    msg.attach(MIMEText(resumen, "plain", "utf-8"))
+    adj = MIMEApplication(adjunto, Name=nombre)
+    adj["Content-Disposition"] = 'attachment; filename="%s"' % nombre
+    msg.attach(adj)
+    s = _conectar_smtp()
+    s.sendmail(IMAP_USER, [IMAP_USER], msg.as_string())
+    s.quit()
+    log("estado de cuenta de %s enviado al buzon" % mes)
+
+def cierre_mensual():
+    global ARCHIVADOS
+    cfg = cargar_cierre()
+    hoy_mes = ahora_mx().strftime("%Y-%m")
+    while cfg.get("mesActual","") < hoy_mes:
+        mes = cfg["mesActual"]; sig = _mes_siguiente(mes)
+        corte = _serial(_mes_inicio(sig))
+        todos = list(db.collection("movimientos").stream())
+        archivar = []
+        for d in todos:
+            m = d.to_dict()
+            if m.get("tipo") not in ("abono","cargo"): continue
+            if m.get("estado") != "verificada": continue          # pendientes pasan al mes nuevo
+            if float(m.get("orden",0) or 0) >= corte: continue    # lo del mes nuevo se queda
+            archivar.append(d)
+        tot_ab = round(sum(abono_neto(float(d.to_dict().get("transferencia",0) or 0))
+                           for d in archivar if d.to_dict().get("tipo")=="abono"), 2)
+        tot_ca = round(sum(float(d.to_dict().get("monto",0) or 0)
+                           for d in archivar if d.to_dict().get("tipo")=="cargo"), 2)
+        saldo_ini = round(float(cfg.get("saldoInicial",0)), 2)
+        saldo_fin = round(saldo_ini + tot_ab - tot_ca, 2)
+        resumen = ("Cierre del mes %s\n\n"
+                   "   Saldo inicial:        $%s\n"
+                   "   + Recargas netas:     $%s\n"
+                   "   - Cargos:             $%s\n"
+                   "   = SALDO FINAL:        $%s   (saldo inicial de %s)\n\n"
+                   "Movimientos archivados: %d (ver Excel adjunto).\n"
+                   "Los movimientos pendientes de confirmar por ORAMI pasan al mes nuevo.\n\n"
+                   "Mensaje automático del motor Control ORAMI.") % (
+                   _mes_titulo(mes), "{:,.2f}".format(saldo_ini), "{:,.2f}".format(tot_ab),
+                   "{:,.2f}".format(tot_ca), "{:,.2f}".format(saldo_fin), _mes_titulo(sig), len(archivar))
+        excel = _excel_mes(archivar, mes, saldo_ini, tot_ab, tot_ca, saldo_fin)
+        enviar_cierre(mes, excel, "Cierre_ORAMI_%s.xlsx" % mes, resumen)   # si falla, aborta aqui
+        # correo enviado -> ahora si: registrar ids archivados y borrar
+        nuevos_ids = {d.id for d in archivar}
+        cargar_archivados()
+        db.collection("config").document("archivados").set({"ids": sorted(ARCHIVADOS | nuevos_ids)})
+        ARCHIVADOS |= nuevos_ids
+        for d in archivar: d.reference.delete()
+        cfg = {"saldoInicial": saldo_fin, "mesActual": sig, "fechaCierre": corte,
+               "actualizado": ahora_mx().strftime("%Y-%m-%d %H:%M:%S"),
+               "ultimoCierre": {"mes": mes, "saldoInicial": saldo_ini, "abonosNetos": tot_ab,
+                                 "cargos": tot_ca, "saldoFinal": saldo_fin, "movimientos": len(archivar)}}
+        db.collection("config").document("cierre").set(cfg)
+        log("CIERRE %s: %d movimientos archivados, saldo final %.2f" % (mes, len(archivar), saldo_fin))
+        enviar_push("Cierre de mes",
+                    "Se cerró %s con saldo de $%s. El estado de cuenta quedó en tu correo. %s inicia con ese saldo." %
+                    (_mes_titulo(mes), "{:,.2f}".format(saldo_fin), _mes_titulo(sig)))
+    return cfg
 
 # ---------- Utilidades de correo ----------
 def decode(s):
@@ -99,6 +251,7 @@ def procesar_banco(body):
     monto = float(importe.group(1).replace(",", ""))
     cve = clave.group(1)
     doc_id = "rec-" + cve
+    if ya_archivado(doc_id): return
     ref_doc = db.collection("movimientos").document(doc_id)
     if ref_doc.get().exists:
         log("transferencia ya registrada:", cve); return
@@ -177,6 +330,7 @@ def procesar_bbva(body):
     if not d:
         log("correo BBVA sin importe/folio, ignorado"); return False
     doc_id = "rec-" + d["folio"]
+    if ya_archivado(doc_id): return False
     ref_doc = db.collection("movimientos").document(doc_id)
     dt = d["dt"]
     orden = (dt - datetime(1899,12,30)).total_seconds()/86400.0
@@ -300,6 +454,7 @@ def procesar_facebook(body):
     monto = round(float(importe.group(1).replace(",", "")), 2)
     rid = ref.group(1)
     doc_id = "fb-" + rid
+    if ya_archivado(doc_id): return
     ref_doc = db.collection("movimientos").document(doc_id)
     if ref_doc.get().exists:
         log("recibo Facebook ya registrado:", rid); return
@@ -387,6 +542,7 @@ def casar_facebook(desc, monto, base, recibo):
         ref_doc.update({"estado":"verificada","reciboOrami":recibo,"confirmadoOrami":True})
         log("cargo Facebook confirmado por ORAMI (ref %s):"%rid, recibo)
     else:
+        if ya_archivado("fb-"+rid): return True   # pertenece a un mes ya cerrado, no recrear
         nb = dict(base)
         nb.update({"tipo":"cargo","monto":monto,"banco":"FACEBK *"+rid,"servicio":"Facebook",
                    "origen":"orami","estado":"verificada","confirmadoOrami":True,
@@ -498,6 +654,7 @@ def procesar_orami(data):
                 if casar_facebook_por_monto(monto, serial, recibo):
                     verif_fb+=1; continue
             doc_id="mov-"+recibo
+            if ya_archivado(doc_id): continue
             base.update({"tipo":"cargo","monto":monto,"banco":merchant(desc),"estado":"verificada","origen":"orami"})
             db.collection("movimientos").document(doc_id).set(base, merge=True); nuevos+=1
         elif abono not in ('',None):
@@ -514,6 +671,7 @@ def procesar_orami(data):
             # 3) Si no caso con ninguna recarga del banco, crear el abono desde ORAMI
             if not hecho:
                 doc_id="mov-"+recibo
+                if ya_archivado(doc_id): continue
                 base.update({"tipo":"abono","transferencia":montoab,"banco":"SPEI recibido","estado":"verificada"})
                 db.collection("movimientos").document(doc_id).set(base, merge=True); nuevos+=1
     log(f"ORAMI procesado: {nuevos} movimientos, {verif} recargas verificadas, {verif_fb} cargos Facebook confirmados")
@@ -523,6 +681,22 @@ def procesar_orami(data):
 
 # ---------- Main ----------
 def main():
+    # 0) Cierre mensual (solo actua si ya cambio el mes). Si falla (p.ej. el correo del
+    #    respaldo), NO se borra nada y se reintenta en la siguiente corrida.
+    try:
+        cfg_c = cierre_mensual()
+        try:
+            db.collection("tokens").document("zdebug_cierre").set({
+                "ts": ahora_mx().strftime("%Y-%m-%d %H:%M:%S"), "ok": True,
+                "mesActual": cfg_c.get("mesActual",""), "saldoInicial": cfg_c.get("saldoInicial",0)})
+        except Exception: pass
+    except Exception as e:
+        log("cierre mensual fallo (se reintenta en la proxima corrida):", e)
+        try:
+            db.collection("tokens").document("zdebug_cierre").set({
+                "ts": ahora_mx().strftime("%Y-%m-%d %H:%M:%S"), "ok": False, "error": str(e)[:400]})
+        except Exception: pass
+    cargar_archivados()   # ids de meses cerrados: jamas se re-crean
     ctx = ssl.create_default_context()
     M = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, ssl_context=ctx, timeout=60)
     M.login(IMAP_USER, IMAP_PASS)
