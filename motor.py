@@ -697,10 +697,28 @@ def main():
                 "ts": ahora_mx().strftime("%Y-%m-%d %H:%M:%S"), "ok": False, "error": str(e)[:400]})
         except Exception: pass
     cargar_archivados()   # ids de meses cerrados: jamas se re-crean
+    # Conexion IMAP con REINTENTOS: si el servidor de correo tiene un bache momentaneo
+    # (no responde), se reintenta en vez de tumbar toda la corrida. Solo falla de verdad
+    # si el correo esta caido en los 3 intentos.
     ctx = ssl.create_default_context()
-    M = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, ssl_context=ctx, timeout=60)
-    M.login(IMAP_USER, IMAP_PASS)
-    M.select("INBOX")
+    M = None
+    for intento in range(3):
+        try:
+            M = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, ssl_context=ctx, timeout=45)
+            M.login(IMAP_USER, IMAP_PASS)
+            M.select("INBOX")
+            break
+        except Exception as e:
+            log("conexion IMAP fallo (intento %d/3): %s" % (intento+1, e))
+            try:
+                if M: M.logout()
+            except Exception: pass
+            M = None
+            if intento < 2:
+                import time as _t; _t.sleep(15)
+    if M is None:
+        log("no se pudo conectar al correo tras 3 intentos; se reintenta en la proxima corrida")
+        return
     typ, data = M.search(None, "UNSEEN")
     ids = list(data[0].split())
     dbg = {"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "unseen": len(ids), "banco": {}, "bbva": []}
