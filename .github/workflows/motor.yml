@@ -10,6 +10,9 @@ concurrency:
 jobs:
   motor:
     runs-on: ubuntu-latest
+    timeout-minutes: 5          # tope duro: si una corrida se cuelga (correo sin responder),
+                                # se corta a los 5 min y libera el candado (evita cancelaciones
+                                # en cadena). La siguiente corrida hace el trabajo normalmente.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

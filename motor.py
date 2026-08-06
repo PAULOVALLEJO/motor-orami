@@ -6,7 +6,8 @@ Motor Control ORAMI
 - Correo de ORAMI (xlsx estado de cuenta) -> agrega/actualiza movimientos y marca recargas VERIFICADAS por clave de rastreo
 Se ejecuta en GitHub Actions (cron).
 """
-import os, ssl, imaplib, email, re, json, io, zipfile, smtplib, html
+import os, ssl, imaplib, email, re, json, io, zipfile, smtplib, socket
+socket.setdefaulttimeout(90)   # ninguna operacion de red se cuelga para siempre, html
 import xml.etree.ElementTree as ET
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
