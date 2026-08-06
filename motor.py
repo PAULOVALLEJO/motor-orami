@@ -740,12 +740,14 @@ def main():
             log("busqueda de correos del banco fallo:", e)
     log(f"correos a revisar: {len(ids)} (no leidos + banco de los ultimos 3 dias)")
     for num in ids:
-        typ, d = M.fetch(num, "(RFC822)")
-        msg = email.message_from_bytes(d[0][1])
-        frm = decode(msg.get("From","")).lower()
-        subj = decode(msg.get("Subject",""))
-        log("correo de:", frm, "| asunto:", subj)
         try:
+            typ, d = M.fetch(num, "(RFC822)")
+            if not d or not d[0]:
+                log("fetch vacio, se omite:", num); continue
+            msg = email.message_from_bytes(d[0][1])
+            frm = decode(msg.get("From","")).lower()
+            subj = decode(msg.get("Subject",""))
+            log("correo de:", frm, "| asunto:", subj)
             xlsx = get_xlsx_attachment(msg)
             body = get_body(msg)
             es_bbva = ("bbva" in frm) or ("interbancaria" in subj.lower())
@@ -779,8 +781,11 @@ def main():
             else:
                 log("correo no reconocido, se ignora")
         except Exception as e:
-            log("ERROR procesando correo:", e)
-        M.store(num, "+FLAGS", "\\Seen")
+            log("ERROR con un correo (se omite, NO tumba la corrida):", e)
+        try:
+            M.store(num, "+FLAGS", "\\Seen")
+        except Exception as e:
+            log("no se pudo marcar leido:", e)
     try:
         dedup_recargas()   # red de seguridad contra recargas dobles
     except Exception as e:
@@ -789,7 +794,10 @@ def main():
         db.collection("tokens").document("zdebug_motor").set(dbg)
     except Exception as e:
         log("no se pudo escribir debug:", e)
-    M.logout()
+    try:
+        M.logout()
+    except Exception as e:
+        log("logout fallo:", e)
     log("listo")
 
 if __name__ == "__main__":
