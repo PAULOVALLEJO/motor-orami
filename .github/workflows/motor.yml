@@ -4,8 +4,9 @@ on:
   workflow_dispatch: {}       # lo dispara cron-job.org (cada 15 min) y se puede correr a mano
 
 concurrency:
-  group: motor               # candado: solo una corrida a la vez (evita avisos duplicados)
-  cancel-in-progress: false
+  group: motor               # candado: solo una corrida a la vez (protege el cierre mensual)
+  cancel-in-progress: true   # si una corrida se cuelga, la siguiente la reemplaza en vez de
+                             # formarse detras (evita la cascada de cancelaciones = "Run failed")
 
 jobs:
   motor:
