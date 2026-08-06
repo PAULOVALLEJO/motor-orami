@@ -720,8 +720,14 @@ def main():
     if M is None:
         log("no se pudo conectar al correo tras 3 intentos; se reintenta en la proxima corrida")
         return
-    typ, data = M.search(None, "UNSEEN")
-    ids = list(data[0].split())
+    try:
+        typ, data = M.search(None, "UNSEEN")
+        ids = list(data[0].split())
+    except Exception as e:
+        log("busqueda de no-leidos fallo (se reintenta la proxima corrida):", e)
+        try: M.logout()
+        except Exception: pass
+        return
     dbg = {"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "unseen": len(ids), "banco": {}, "bbva": []}
     # Ademas: correos del BANCO de los ultimos 3 dias AUNQUE ya esten leidos. Outlook los
     # marca leidos con la vista previa antes de que el motor (cada 15 min) alcance a leerlos.
