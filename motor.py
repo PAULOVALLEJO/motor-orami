@@ -739,7 +739,7 @@ def main():
         log("no se pudo conectar al correo tras 3 intentos; se reintenta en la proxima corrida")
         return
     try:
-        typ, data = M.search(None, "UNSEEN")
+        typ, data = M.uid('search', None, "UNSEEN")   # UID: estable aunque Outlook mueva correos
         ids = list(data[0].split())
     except Exception as e:
         log("busqueda de no-leidos fallo (se reintenta la proxima corrida):", e)
@@ -755,7 +755,7 @@ def main():
     since = (datetime.now() - timedelta(days=7)).strftime("%d-%b-%Y")
     for addr in ("bbva.mx", "banorte", "jgortizm"):
         try:
-            typ, d = M.search(None, 'FROM', addr, 'SINCE', since)
+            typ, d = M.uid('search', None, 'FROM', addr, 'SINCE', since)
             hits = d[0].split()
             dbg["banco"][addr] = len(hits)
             for n in hits:
@@ -768,7 +768,7 @@ def main():
     dbg["nids"] = len(ids); dbg["vistos"] = []
     for num in ids:
         try:
-            typ, d = M.fetch(num, "(RFC822)")
+            typ, d = M.uid('fetch', num, "(RFC822)")
             if not d or not d[0]:
                 log("fetch vacio, se omite:", num); continue
             msg = email.message_from_bytes(d[0][1])
@@ -817,7 +817,7 @@ def main():
                 dbg["orami_dbg"][-1]["error"] = str(e)[:180]
             log("ERROR con un correo (se omite, NO tumba la corrida):", e)
         try:
-            M.store(num, "+FLAGS", "\\Seen")
+            M.uid('store', num, "+FLAGS", "\\Seen")
         except Exception as e:
             log("no se pudo marcar leido:", e)
     try:
