@@ -757,7 +757,7 @@ def main():
     # Reprocesar es idempotente (rec-<folio>/rec-<clave>/mov-<recibo>/fb-<ref>), no duplica.
     # 'jgortizm' = quien manda el estado de cuenta de ORAMI (reportes xlsx).
     seen_set = set(ids)
-    since = (datetime.now() - timedelta(days=7)).strftime("%d-%b-%Y")
+    since = (datetime.now() - timedelta(days=3)).strftime("%d-%b-%Y")   # 3 dias basta (reportes ORAMI son acumulativos)
     for addr in ("bbva.mx", "banorte", "jgortizm"):
         try:
             typ, d = M.uid('search', None, 'FROM', addr, 'SINCE', since)
