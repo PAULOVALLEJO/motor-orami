@@ -539,18 +539,22 @@ def casar_facebook(desc, monto, base, recibo):
         return False
     rid = m.group(1)
     ref_doc = db.collection("movimientos").document("fb-"+rid)
-    if ref_doc.get().exists:
+    snap = ref_doc.get()
+    if snap.exists:
+        if snap.to_dict().get("confirmadoOrami"):
+            return "ya"   # ya estaba confirmado por ORAMI -> nada nuevo (no notificar)
         ref_doc.update({"estado":"verificada","reciboOrami":recibo,"confirmadoOrami":True})
         log("cargo Facebook confirmado por ORAMI (ref %s):"%rid, recibo)
+        return "nueva"
     else:
-        if ya_archivado("fb-"+rid): return True   # pertenece a un mes ya cerrado, no recrear
+        if ya_archivado("fb-"+rid): return "ya"   # pertenece a un mes ya cerrado, no recrear
         nb = dict(base)
         nb.update({"tipo":"cargo","monto":monto,"banco":"FACEBK *"+rid,"servicio":"Facebook",
                    "origen":"orami","estado":"verificada","confirmadoOrami":True,
                    "reciboOrami":recibo,"refFb":rid})
         ref_doc.set(nb, merge=True)
         log("cargo Facebook creado desde ORAMI bajo id de referencia:", rid)
-    return True
+        return "nueva"
 
 def casar_facebook_por_monto(monto, serial, recibo_orami):
     """Para cargos de Facebook que ORAMI reporta SIN referencia (descripcion 'FACEBOOK MEXICO'
@@ -565,7 +569,7 @@ def casar_facebook_por_monto(monto, serial, recibo_orami):
     # idempotencia: si un recibo fb ya fue sellado con este recibo de ORAMI, ya se caso
     for d in fbs:
         if str(d.to_dict().get("reciboOrami","")) == str(recibo_orami):
-            return True
+            return "ya"
     cand=[]
     for d in fbs:
         m=d.to_dict()
@@ -575,7 +579,7 @@ def casar_facebook_por_monto(monto, serial, recibo_orami):
     cand.sort(key=lambda x:x[0])
     cand[0][1].reference.update({"estado":"verificada","confirmadoOrami":True,"reciboOrami":str(recibo_orami)})
     log("cargo Facebook (sin ref) confirmado por ORAMI (monto+fecha):", monto, "recibo", recibo_orami)
-    return True
+    return "nueva"
 
 def casar_recarga(monto, serial, recibo_orami):
     """Casa un 'SPEI Recibido' del reporte de ORAMI con una recarga del banco.
@@ -590,7 +594,7 @@ def casar_recarga(monto, serial, recibo_orami):
     # 1) idempotencia: ya hay una recarga sellada con este mismo recibo de ORAMI -> no dupliques
     for d in abonos:
         if str(d.to_dict().get("reciboOrami","")) == str(recibo_orami):
-            return True
+            return "ya"
     # 2) casar por monto + fecha una recarga PENDIENTE, o una recarga del banco (BBVA, con
     #    folioBanco) que haya quedado verificada SIN sellar -> asi el reproceso no la duplica.
     cand=[]
@@ -604,7 +608,7 @@ def casar_recarga(monto, serial, recibo_orami):
     cand.sort(key=lambda x:x[0])
     cand[0][1].reference.update({"estado":"verificada","reciboOrami":str(recibo_orami)})
     log("recarga confirmada por ORAMI (monto+fecha):", monto, "recibo", recibo_orami)
-    return True
+    return "nueva"
 
 def dedup_recargas():
     """Red de seguridad: si una recarga del banco (rec-, con folioBanco/comprobante) y un
@@ -649,32 +653,47 @@ def procesar_orami(data):
             monto=round(float(cargo),2)
             if servicio(desc)=='Facebook':
                 # 1) casar por referencia FACEBK *xxx (lo mas confiable)
-                if casar_facebook(desc, monto, base, recibo):
-                    verif_fb+=1; continue
+                r = casar_facebook(desc, monto, base, recibo)
+                if r:
+                    if r=="nueva": verif_fb+=1
+                    continue
                 # 2) sin referencia (FACEBOOK MEXICO / METAPAY): casar un recibo fb PENDIENTE por monto
-                if casar_facebook_por_monto(monto, serial, recibo):
-                    verif_fb+=1; continue
+                r = casar_facebook_por_monto(monto, serial, recibo)
+                if r:
+                    if r=="nueva": verif_fb+=1
+                    continue
             doc_id="mov-"+recibo
             if ya_archivado(doc_id): continue
+            ref = db.collection("movimientos").document(doc_id)
+            existe = ref.get().exists
             base.update({"tipo":"cargo","monto":monto,"banco":merchant(desc),"estado":"verificada","origen":"orami"})
-            db.collection("movimientos").document(doc_id).set(base, merge=True); nuevos+=1
+            ref.set(base, merge=True)
+            if not existe: nuevos+=1
         elif abono not in ('',None):
             montoab=round(float(abono),2); hecho=False
             # 1) Banorte: casar por Clave de Rastreo (si viene en la descripcion)
             cve = re.search(r'Clave de Rastreo:\s*([A-Z0-9]+)', desc)
             if cve:
                 rec = db.collection("movimientos").document("rec-"+cve.group(1))
-                if rec.get().exists:
-                    rec.update({"estado":"verificada"}); verif+=1; hecho=True
+                snap = rec.get()
+                if snap.exists:
+                    if snap.to_dict().get("estado")!="verificada": verif+=1   # solo cuenta si cambia
+                    rec.update({"estado":"verificada"}); hecho=True
             # 2) BBVA (sin clave): casar por monto bruto + fecha (idempotente por recibo de ORAMI)
-            if not hecho and casar_recarga(montoab, serial, recibo):
-                verif+=1; hecho=True
+            if not hecho:
+                r = casar_recarga(montoab, serial, recibo)
+                if r:
+                    if r=="nueva": verif+=1
+                    hecho=True
             # 3) Si no caso con ninguna recarga del banco, crear el abono desde ORAMI
             if not hecho:
                 doc_id="mov-"+recibo
                 if ya_archivado(doc_id): continue
+                ref = db.collection("movimientos").document(doc_id)
+                existe = ref.get().exists
                 base.update({"tipo":"abono","transferencia":montoab,"banco":"SPEI recibido","estado":"verificada"})
-                db.collection("movimientos").document(doc_id).set(base, merge=True); nuevos+=1
+                ref.set(base, merge=True)
+                if not existe: nuevos+=1
     log(f"ORAMI procesado: {nuevos} movimientos, {verif} recargas verificadas, {verif_fb} cargos Facebook confirmados")
     # Notificar SOLO si hubo algo nuevo (el reporte se reprocesa cada corrida por el escaneo
     # de 7 dias; sin este candado mandaria un push repetido en cada corrida).
