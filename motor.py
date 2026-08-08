@@ -676,6 +676,21 @@ def procesar_orami(data):
                 base.update({"tipo":"abono","transferencia":montoab,"banco":"SPEI recibido","estado":"verificada"})
                 db.collection("movimientos").document(doc_id).set(base, merge=True); nuevos+=1
     log(f"ORAMI procesado: {nuevos} movimientos, {verif} recargas verificadas, {verif_fb} cargos Facebook confirmados")
+    # Diagnostico: cuantas filas trae el reporte y las ultimas 6 (fecha + monto) para ver
+    # hasta que dia llega ORAMI y confirmar que se lee bien.
+    try:
+        datarows = [r for r in rows if r and str(r[0]).strip().isdigit()]
+        ultimas = []
+        for r in datarows[-6:]:
+            dtt = datetime(1899,12,30)+timedelta(days=float(r[1]))
+            monto = (r[5] if len(r)>5 and r[5] not in ('',None) else (r[6] if len(r)>6 else ''))
+            ultimas.append("%d-%s %s %s" % (dtt.day, MESES[dtt.month-1], str(monto), (str(r[4])[:18] if len(r)>4 else "")))
+        db.collection("tokens").document("zdebug_orami").set({
+            "ts": ahora_mx().strftime("%Y-%m-%d %H:%M:%S"),
+            "filas": len(datarows), "nuevos": nuevos, "verif": verif, "verif_fb": verif_fb,
+            "ultimas": ultimas})
+    except Exception as e:
+        log("debug orami fallo:", e)
     # Notificar SOLO si hubo algo nuevo (el reporte se reprocesa cada corrida por el escaneo
     # de 7 dias; sin este candado mandaria un push repetido en cada corrida).
     if nuevos or verif or verif_fb:
