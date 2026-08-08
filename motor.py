@@ -769,6 +769,9 @@ def main():
     for num in ids:
         try:
             typ, d = M.uid('fetch', num, "(RFC822)")
+            dbg["vistos"].append("uid=%s typ=%s d0=%s" % (
+                (num.decode() if isinstance(num, bytes) else num), typ,
+                (type(d[0]).__name__ if d else "None")))
             if not d or not d[0]:
                 log("fetch vacio, se omite:", num); continue
             msg = email.message_from_bytes(d[0][1])
@@ -777,7 +780,7 @@ def main():
             log("correo de:", frm, "| asunto:", subj)
             xlsx = get_xlsx_attachment(msg)
             body = get_body(msg)
-            if len(dbg["vistos"])<20: dbg["vistos"].append("%s | xlsx=%s" % (frm[:32], xlsx is not None))
+            if dbg["vistos"]: dbg["vistos"][-1] += " | %s xlsx=%s" % (frm[:28], xlsx is not None)
             es_bbva = ("bbva" in frm) or ("interbancaria" in subj.lower())
             es_banorte = ("banorte" in frm) or ("transferencia" in subj.lower() and "spei" in subj.lower())
             if "jgortizm" in frm or "gerardo ortiz" in frm:
