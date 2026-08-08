@@ -769,6 +769,18 @@ def main():
         except Exception as e:
             dbg["scan"][addr] = "err"
             log("busqueda de correos recientes fallo:", e)
+    # Recibos de Meta/Facebook: por ASUNTO ("receipt"), porque llegan reenviados (el remitente
+    # cambia al de quien reenvia). Idempotente por fb-<ref>, no duplica.
+    try:
+        typ, d = M.uid('search', None, 'SUBJECT', 'receipt', 'SINCE', since)
+        hits = d[0].split()
+        dbg["scan"]["receipt"] = len(hits)
+        for n in hits:
+            if n not in seen_set:
+                ids.append(n); seen_set.add(n)
+    except Exception as e:
+        dbg["scan"]["receipt"] = "err"
+        log("busqueda de recibos por asunto fallo:", e)
     log(f"correos a revisar: {len(ids)}")
     for num in ids:
         try:
