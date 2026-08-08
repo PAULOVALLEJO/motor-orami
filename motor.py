@@ -676,9 +676,12 @@ def procesar_orami(data):
                 base.update({"tipo":"abono","transferencia":montoab,"banco":"SPEI recibido","estado":"verificada"})
                 db.collection("movimientos").document(doc_id).set(base, merge=True); nuevos+=1
     log(f"ORAMI procesado: {nuevos} movimientos, {verif} recargas verificadas, {verif_fb} cargos Facebook confirmados")
-    extra = f" y {verif_fb} cargos de Facebook confirmados" if verif_fb else ""
-    enviar_push("Estado de cuenta de ORAMI",
-                f"Llegó el reporte de ORAMI: {nuevos} movimientos y {verif} recargas verificadas{extra}.")
+    # Notificar SOLO si hubo algo nuevo (el reporte se reprocesa cada corrida por el escaneo
+    # de 7 dias; sin este candado mandaria un push repetido en cada corrida).
+    if nuevos or verif or verif_fb:
+        extra = f" y {verif_fb} cargos de Facebook confirmados" if verif_fb else ""
+        enviar_push("Estado de cuenta de ORAMI",
+                    f"Llegó el reporte de ORAMI: {nuevos} movimientos y {verif} recargas verificadas{extra}.")
 
 # ---------- Main ----------
 def main():
@@ -729,12 +732,13 @@ def main():
         except Exception: pass
         return
     dbg = {"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "unseen": len(ids), "banco": {}, "bbva": []}
-    # Ademas: correos del BANCO de los ultimos 3 dias AUNQUE ya esten leidos. Outlook los
-    # marca leidos con la vista previa antes de que el motor (cada 15 min) alcance a leerlos.
-    # El procesamiento es idempotente (rec-<folio>/rec-<clave>), asi que reprocesar no duplica.
+    # Ademas: correos del BANCO y de ORAMI de los ultimos 7 dias AUNQUE ya esten leidos.
+    # Outlook los marca leidos con la vista previa antes de que el motor (cada 15 min) los
+    # alcance. Reprocesar es idempotente (rec-<folio>/rec-<clave>/mov-<recibo>/fb-<ref>), no
+    # duplica. 'jgortizm' = quien manda el estado de cuenta de ORAMI (reportes xlsx).
     seen_set = set(ids)
-    since = (datetime.now() - timedelta(days=3)).strftime("%d-%b-%Y")
-    for addr in ("bbva.mx", "banorte"):
+    since = (datetime.now() - timedelta(days=7)).strftime("%d-%b-%Y")
+    for addr in ("bbva.mx", "banorte", "jgortizm"):
         try:
             typ, d = M.search(None, 'FROM', addr, 'SINCE', since)
             hits = d[0].split()
