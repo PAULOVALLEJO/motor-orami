@@ -765,6 +765,7 @@ def main():
             dbg["banco"][addr] = "err:"+str(e)[:80]
             log("busqueda de correos del banco fallo:", e)
     log(f"correos a revisar: {len(ids)} (no leidos + banco de los ultimos 3 dias)")
+    dbg["nids"] = len(ids); dbg["vistos"] = []
     for num in ids:
         try:
             typ, d = M.fetch(num, "(RFC822)")
@@ -776,6 +777,7 @@ def main():
             log("correo de:", frm, "| asunto:", subj)
             xlsx = get_xlsx_attachment(msg)
             body = get_body(msg)
+            if len(dbg["vistos"])<20: dbg["vistos"].append("%s | xlsx=%s" % (frm[:32], xlsx is not None))
             es_bbva = ("bbva" in frm) or ("interbancaria" in subj.lower())
             es_banorte = ("banorte" in frm) or ("transferencia" in subj.lower() and "spei" in subj.lower())
             if "jgortizm" in frm or "gerardo ortiz" in frm:
