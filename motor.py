@@ -676,21 +676,6 @@ def procesar_orami(data):
                 base.update({"tipo":"abono","transferencia":montoab,"banco":"SPEI recibido","estado":"verificada"})
                 db.collection("movimientos").document(doc_id).set(base, merge=True); nuevos+=1
     log(f"ORAMI procesado: {nuevos} movimientos, {verif} recargas verificadas, {verif_fb} cargos Facebook confirmados")
-    # Diagnostico: cuantas filas trae el reporte y las ultimas 6 (fecha + monto) para ver
-    # hasta que dia llega ORAMI y confirmar que se lee bien.
-    try:
-        datarows = [r for r in rows if r and str(r[0]).strip().isdigit()]
-        ultimas = []
-        for r in datarows[-6:]:
-            dtt = datetime(1899,12,30)+timedelta(days=float(r[1]))
-            monto = (r[5] if len(r)>5 and r[5] not in ('',None) else (r[6] if len(r)>6 else ''))
-            ultimas.append("%d-%s %s %s" % (dtt.day, MESES[dtt.month-1], str(monto), (str(r[4])[:18] if len(r)>4 else "")))
-        db.collection("tokens").document("zdebug_orami").set({
-            "ts": ahora_mx().strftime("%Y-%m-%d %H:%M:%S"),
-            "filas": len(datarows), "nuevos": nuevos, "verif": verif, "verif_fb": verif_fb,
-            "ultimas": ultimas})
-    except Exception as e:
-        log("debug orami fallo:", e)
     # Notificar SOLO si hubo algo nuevo (el reporte se reprocesa cada corrida por el escaneo
     # de 7 dias; sin este candado mandaria un push repetido en cada corrida).
     if nuevos or verif or verif_fb:
@@ -746,32 +731,29 @@ def main():
         try: M.logout()
         except Exception: pass
         return
-    dbg = {"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "unseen": len(ids), "banco": {}, "bbva": []}
-    # Ademas: correos del BANCO y de ORAMI de los ultimos 7 dias AUNQUE ya esten leidos.
-    # Outlook los marca leidos con la vista previa antes de que el motor (cada 15 min) los
-    # alcance. Reprocesar es idempotente (rec-<folio>/rec-<clave>/mov-<recibo>/fb-<ref>), no
-    # duplica. 'jgortizm' = quien manda el estado de cuenta de ORAMI (reportes xlsx).
+    # Latido/salud: cuando corrio y cuantos correos vio (se guarda en tokens/zdebug_motor).
+    dbg = {"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "unseen": len(ids), "scan": {}}
+    # Ademas: correos del BANCO y de ORAMI de los ultimos 7 dias AUNQUE ya esten leidos
+    # (Outlook los marca leidos con la vista previa antes de que el motor los alcance).
+    # Reprocesar es idempotente (rec-<folio>/rec-<clave>/mov-<recibo>/fb-<ref>), no duplica.
+    # 'jgortizm' = quien manda el estado de cuenta de ORAMI (reportes xlsx).
     seen_set = set(ids)
     since = (datetime.now() - timedelta(days=7)).strftime("%d-%b-%Y")
     for addr in ("bbva.mx", "banorte", "jgortizm"):
         try:
             typ, d = M.uid('search', None, 'FROM', addr, 'SINCE', since)
             hits = d[0].split()
-            dbg["banco"][addr] = len(hits)
+            dbg["scan"][addr] = len(hits)
             for n in hits:
                 if n not in seen_set:
                     ids.append(n); seen_set.add(n)
         except Exception as e:
-            dbg["banco"][addr] = "err:"+str(e)[:80]
-            log("busqueda de correos del banco fallo:", e)
-    log(f"correos a revisar: {len(ids)} (no leidos + banco de los ultimos 3 dias)")
-    dbg["nids"] = len(ids); dbg["vistos"] = []
+            dbg["scan"][addr] = "err"
+            log("busqueda de correos recientes fallo:", e)
+    log(f"correos a revisar: {len(ids)}")
     for num in ids:
         try:
-            typ, d = M.uid('fetch', num, "(RFC822)")
-            dbg["vistos"].append("uid=%s typ=%s d0=%s" % (
-                (num.decode() if isinstance(num, bytes) else num), typ,
-                (type(d[0]).__name__ if d else "None")))
+            typ, d = M.uid('fetch', num, "(RFC822)")   # UID: estable aunque Outlook mueva correos
             if not d or not d[0]:
                 log("fetch vacio, se omite:", num); continue
             msg = email.message_from_bytes(d[0][1])
@@ -780,45 +762,29 @@ def main():
             log("correo de:", frm, "| asunto:", subj)
             xlsx = get_xlsx_attachment(msg)
             body = get_body(msg)
-            if dbg["vistos"]: dbg["vistos"][-1] += " | %s xlsx=%s" % (frm[:28], xlsx is not None)
             es_bbva = ("bbva" in frm) or ("interbancaria" in subj.lower())
             es_banorte = ("banorte" in frm) or ("transferencia" in subj.lower() and "spei" in subj.lower())
-            if "jgortizm" in frm or "gerardo ortiz" in frm:
-                dbg.setdefault("orami_dbg", []).append({"subj": subj[:40], "tiene_xlsx": xlsx is not None, "ruta": "?"})
             if es_bbva:
-                mfol = re.search(r"Folio Internet\s*:?\s*(\d+)", body)
-                _ix = body.find("Importe")
-                dbg["bbva"].append({"folio": mfol.group(1) if mfol else "NO_MATCH",
-                                    "importeCtx": (body[_ix:_ix+130] if _ix>=0 else "NO_Importe")})
                 procesar_bbva(body)
                 # Reenviar a ORAMI con REINTENTO: se marca reenviadoOrami en la recarga solo
-                # cuando el envio sale bien; mientras no, se reintenta en cada corrida (los
-                # correos del banco se re-escanean 3 dias, asi que hay muchas oportunidades).
+                # cuando el envio sale bien; mientras no, se reintenta en cada corrida.
+                mfol = re.search(r"Folio Internet\s*:?\s*(\d+)", body)
                 if mfol:
                     rdoc = db.collection("movimientos").document("rec-" + mfol.group(1))
                     rsnap = rdoc.get()
                     if rsnap.exists and not rsnap.to_dict().get("reenviadoOrami"):
                         datos = parse_bbva(body)
-                        res = reenviar_aviso(REENVIO_BBVA, datos) if datos else "sin datos parseables"
-                        if res is True:
+                        if datos and reenviar_aviso(REENVIO_BBVA, datos) is True:
                             rdoc.update({"reenviadoOrami": True})
-                            dbg["bbva"][-1]["reenvio"] = "ok"
-                        else:
-                            dbg["bbva"][-1]["reenvio"] = res
             elif es_banorte:
                 procesar_banco(body)
             elif xlsx is not None:
-                if dbg.get("orami_dbg"): dbg["orami_dbg"][-1]["ruta"] = "procesar_orami"
                 procesar_orami(xlsx)
             elif "facebook.com" in frm or es_facebook(subj, body):
                 procesar_facebook(body)
             else:
-                if dbg.get("orami_dbg"): dbg["orami_dbg"][-1]["ruta"] = "IGNORADO (no reconocido)"
                 log("correo no reconocido, se ignora")
         except Exception as e:
-            if dbg.get("vistos"): dbg["vistos"][-1] += " ERROR[%s]:%s" % (type(e).__name__, str(e)[:110])
-            if dbg.get("orami_dbg") and dbg["orami_dbg"] and dbg["orami_dbg"][-1].get("ruta")=="procesar_orami":
-                dbg["orami_dbg"][-1]["error"] = str(e)[:180]
             log("ERROR con un correo (se omite, NO tumba la corrida):", e)
         try:
             M.uid('store', num, "+FLAGS", "\\Seen")
