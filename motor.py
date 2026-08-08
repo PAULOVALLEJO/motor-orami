@@ -816,6 +816,7 @@ def main():
                 if dbg.get("orami_dbg"): dbg["orami_dbg"][-1]["ruta"] = "IGNORADO (no reconocido)"
                 log("correo no reconocido, se ignora")
         except Exception as e:
+            if dbg.get("vistos"): dbg["vistos"][-1] += " ERROR[%s]:%s" % (type(e).__name__, str(e)[:110])
             if dbg.get("orami_dbg") and dbg["orami_dbg"] and dbg["orami_dbg"][-1].get("ruta")=="procesar_orami":
                 dbg["orami_dbg"][-1]["error"] = str(e)[:180]
             log("ERROR con un correo (se omite, NO tumba la corrida):", e)
