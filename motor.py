@@ -778,6 +778,8 @@ def main():
             body = get_body(msg)
             es_bbva = ("bbva" in frm) or ("interbancaria" in subj.lower())
             es_banorte = ("banorte" in frm) or ("transferencia" in subj.lower() and "spei" in subj.lower())
+            if "jgortizm" in frm or "gerardo ortiz" in frm:
+                dbg.setdefault("orami_dbg", []).append({"subj": subj[:40], "tiene_xlsx": xlsx is not None, "ruta": "?"})
             if es_bbva:
                 mfol = re.search(r"Folio Internet\s*:?\s*(\d+)", body)
                 _ix = body.find("Importe")
@@ -801,12 +803,16 @@ def main():
             elif es_banorte:
                 procesar_banco(body)
             elif xlsx is not None:
+                if dbg.get("orami_dbg"): dbg["orami_dbg"][-1]["ruta"] = "procesar_orami"
                 procesar_orami(xlsx)
             elif "facebook.com" in frm or es_facebook(subj, body):
                 procesar_facebook(body)
             else:
+                if dbg.get("orami_dbg"): dbg["orami_dbg"][-1]["ruta"] = "IGNORADO (no reconocido)"
                 log("correo no reconocido, se ignora")
         except Exception as e:
+            if dbg.get("orami_dbg") and dbg["orami_dbg"] and dbg["orami_dbg"][-1].get("ruta")=="procesar_orami":
+                dbg["orami_dbg"][-1]["error"] = str(e)[:180]
             log("ERROR con un correo (se omite, NO tumba la corrida):", e)
         try:
             M.store(num, "+FLAGS", "\\Seen")
