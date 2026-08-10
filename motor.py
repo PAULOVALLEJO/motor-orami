@@ -141,8 +141,26 @@ def enviar_cierre(mes, adjunto, nombre, resumen):
     s.quit()
     log("estado de cuenta de %s enviado al buzon" % mes)
 
+def sembrar_cierres_historicos():
+    """Carga una sola vez los cierres de junio y julio 2026 (reconstruidos de los respaldos y
+    del reporte de ORAMI) para que aparezcan en la app; esos meses se cerraron antes de que el
+    cierre guardara en la coleccion 'cierres'. No sobrescribe lo que ya exista."""
+    ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cierres_historicos.json")
+    if not os.path.exists(ruta): return
+    try:
+        datos = json.load(open(ruta, encoding="utf-8"))
+    except Exception as e:
+        log("no se pudo leer cierres_historicos.json:", e); return
+    for mes, doc in datos.items():
+        ref = db.collection("cierres").document(mes)
+        if ref.get().exists: continue
+        doc = dict(doc); doc["generado"] = ahora_mx().strftime("%Y-%m-%d %H:%M:%S")
+        ref.set(doc)
+        log("cierre historico sembrado:", mes, "(%d movimientos)" % doc.get("nMovimientos", 0))
+
 def cierre_mensual():
     global ARCHIVADOS
+    sembrar_cierres_historicos()
     cfg = cargar_cierre()
     hoy_mes = ahora_mx().strftime("%Y-%m")
     while cfg.get("mesActual","") < hoy_mes:
