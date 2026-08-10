@@ -172,9 +172,39 @@ def cierre_mensual():
                    "Mensaje automático del motor Control ORAMI.") % (
                    _mes_titulo(mes), "{:,.2f}".format(saldo_ini), "{:,.2f}".format(tot_ab),
                    "{:,.2f}".format(tot_ca), "{:,.2f}".format(saldo_fin), _mes_titulo(sig), len(archivar))
-        excel = _excel_mes(archivar, mes, saldo_ini, tot_ab, tot_ca, saldo_fin)
-        enviar_cierre(mes, excel, "Cierre_ORAMI_%s.xlsx" % mes, resumen)   # si falla, aborta aqui
-        # correo enviado -> ahora si: registrar ids archivados y borrar
+        # 1) GUARDAR el cierre en la base (coleccion 'cierres') -> la app lo puede descargar
+        #    siempre, sin depender del correo. Esto es lo que hace seguro borrar despues.
+        por_serv = {}
+        movs = []
+        for d in sorted(archivar, key=lambda x: float(x.to_dict().get("orden",0))):
+            m = d.to_dict()
+            serv = m.get("servicio","Otro")
+            if m.get("tipo") == "cargo":
+                c = round(float(m.get("monto",0) or 0), 2)
+                agg = por_serv.setdefault(serv, {"n":0, "total":0.0})
+                agg["n"] += 1; agg["total"] = round(agg["total"] + c, 2)
+                movs.append({"fecha": m.get("fechaFull",""), "hora": m.get("hora",""), "tipo": "Cargo",
+                             "servicio": serv, "detalle": str(m.get("banco",""))[:60],
+                             "recibo": str(m.get("recibo","")), "cargo": c})
+            else:
+                t = round(float(m.get("transferencia",0) or 0), 2)
+                movs.append({"fecha": m.get("fechaFull",""), "hora": m.get("hora",""), "tipo": "Recarga",
+                             "servicio": serv, "detalle": "SPEI recibido",
+                             "recibo": str(m.get("recibo","")), "transferencia": t,
+                             "comision": comision(t), "neto": abono_neto(t)})
+        db.collection("cierres").document(mes).set({
+            "mes": mes, "titulo": _mes_titulo(mes),
+            "saldoInicial": saldo_ini, "recargasNetas": tot_ab, "cargos": tot_ca, "saldoFinal": saldo_fin,
+            "nMovimientos": len(archivar), "porServicio": por_serv, "movimientos": movs,
+            "generado": ahora_mx().strftime("%Y-%m-%d %H:%M:%S")})
+        log("cierre %s guardado en la base (%d movimientos)" % (mes, len(movs)))
+        # 2) Mandarlo tambien por correo (si falla, NO se aborta: ya quedo guardado arriba)
+        try:
+            excel = _excel_mes(archivar, mes, saldo_ini, tot_ab, tot_ca, saldo_fin)
+            enviar_cierre(mes, excel, "Cierre_ORAMI_%s.xlsx" % mes, resumen)
+        except Exception as e:
+            log("no se pudo enviar el cierre por correo (queda guardado en la app):", e)
+        # 3) Registrar ids archivados y borrar
         nuevos_ids = {d.id for d in archivar}
         cargar_archivados()
         db.collection("config").document("archivados").set({"ids": sorted(ARCHIVADOS | nuevos_ids)})
@@ -187,7 +217,7 @@ def cierre_mensual():
         db.collection("config").document("cierre").set(cfg)
         log("CIERRE %s: %d movimientos archivados, saldo final %.2f" % (mes, len(archivar), saldo_fin))
         enviar_push("Cierre de mes",
-                    "Se cerró %s con saldo de $%s. El estado de cuenta quedó en tu correo. %s inicia con ese saldo." %
+                    "Se cerró %s con saldo de $%s. Descarga su estado de cuenta desde la app. %s inicia con ese saldo." %
                     (_mes_titulo(mes), "{:,.2f}".format(saldo_fin), _mes_titulo(sig)))
     return cfg
 
