@@ -52,6 +52,7 @@ BOOTSTRAP_MES   = "2026-06"  # primer mes administrado por el cierre
 MESES_NOMBRE = ["","Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio",
                 "Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
 ARCHIVADOS = set()   # ids ya archivados en cierres previos (no re-crearlos jamas)
+CORTE = 0.0          # serial del 1o del mes en curso: nada anterior puede volver a crearse
 
 def ahora_mx():
     """Hora de Mexico (UTC-6 fijo); los runners de GitHub estan en UTC."""
@@ -84,10 +85,55 @@ def cargar_archivados():
     except Exception as e:
         log("no se pudieron cargar archivados:", e); ARCHIVADOS = set()
 
-def ya_archivado(doc_id):
+def cargar_corte():
+    """Serial del inicio del mes en curso. Todo movimiento con orden anterior pertenece a un
+    mes YA CERRADO (archivado) y no debe volver a crearse."""
+    global CORTE
+    try:
+        cfg = db.collection("config").document("cierre").get().to_dict() or {}
+        CORTE = _serial(_mes_inicio(cfg.get("mesActual", BOOTSTRAP_MES)))
+    except Exception as e:
+        log("no se pudo cargar el corte:", e); CORTE = 0.0
+
+def ya_archivado(doc_id, orden=None):
+    """Candado anti-resurreccion. Dos capas:
+    1) por FECHA (principal): un movimiento anterior al mes en curso ya fue archivado en el
+       cierre -> no re-crearlo. Es a prueba del ID con que venga: un mismo cargo puede llegar
+       como fb-<ref> (recibo de Meta) o mov-<recibo> (reporte de ORAMI), y una recarga como
+       rec-<folio> (banco) o mov-<recibo> (ORAMI); por ID solos, resucitaban.
+    2) por ID (respaldo): lista de ids archivados en cierres previos."""
+    if orden is not None and CORTE and float(orden) < CORTE:
+        log("omitido (fecha de un mes ya cerrado):", doc_id); return True
     if doc_id in ARCHIVADOS:
-        log("omitido (pertenece a un mes ya cerrado):", doc_id); return True
+        log("omitido (id de un mes ya cerrado):", doc_id); return True
     return False
+
+def limpiar_resucitados():
+    """Red de seguridad contra movimientos de meses YA CERRADOS (ya contados en su cierre;
+    si reaparecen inflan el saldo). En una pasada:
+    1) PENDIENTE de mes cerrado -> se marca 'arrastrado': paso al mes en curso a proposito
+       (espera confirmacion de ORAMI). Cuando ORAMI lo confirme NO debe borrarse; se archivara
+       en el proximo cierre.
+    2) VERIFICADO de mes cerrado y NO arrastrado -> es una resurreccion: se borra."""
+    if not CORTE: return
+    try:
+        docs = list(db.collection("movimientos").stream())
+    except Exception as e:
+        log("limpieza: query fallo:", e); return
+    borrados = 0; marcados = 0
+    for d in docs:
+        m = d.to_dict()
+        if m.get("tipo") not in ("abono", "cargo"): continue
+        if float(m.get("orden", 0) or 0) >= CORTE: continue      # es del mes en curso: se queda
+        if m.get("estado") != "verificada":
+            if not m.get("arrastrado"):
+                d.reference.update({"arrastrado": True}); marcados += 1
+            continue
+        if m.get("arrastrado"): continue                          # arrastrado ya confirmado: se queda
+        d.reference.delete(); borrados += 1
+        log("limpieza: borrado resucitado %s (%s)" % (d.id, m.get("fechaFull","")))
+    if marcados: log("limpieza: %d pendientes de meses cerrados marcados como arrastrados" % marcados)
+    if borrados: log("limpieza: %d movimientos de meses cerrados eliminados" % borrados)
 
 def _excel_mes(archivar, mes, saldo_ini, tot_ab, tot_ca, saldo_fin):
     from openpyxl import Workbook
@@ -310,6 +356,7 @@ def procesar_banco(body):
     except Exception:
         dt = datetime.now()
     orden = (dt - datetime(1899,12,30)).total_seconds()/86400.0
+    if ya_archivado(doc_id, orden): return
     MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
     ref_doc.set({
         "tipo":"abono","servicio":"Recarga (transferencia)",
@@ -379,10 +426,10 @@ def procesar_bbva(body):
     if not d:
         log("correo BBVA sin importe/folio, ignorado"); return False
     doc_id = "rec-" + d["folio"]
-    if ya_archivado(doc_id): return False
-    ref_doc = db.collection("movimientos").document(doc_id)
     dt = d["dt"]
     orden = (dt - datetime(1899,12,30)).total_seconds()/86400.0
+    if ya_archivado(doc_id, orden): return False
+    ref_doc = db.collection("movimientos").document(doc_id)
     MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
     payload = {
         "tipo":"abono","servicio":"Recarga (transferencia)",
@@ -517,6 +564,7 @@ def procesar_facebook(body):
     else:
         dt = datetime.now()
     orden = (dt - datetime(1899,12,30)).total_seconds()/86400.0
+    if ya_archivado(doc_id, orden): return
     ref_doc.set({
         "tipo":"cargo","servicio":"Facebook","origen":"facebook",
         "monto":monto,"banco":"Facebook (Meta) - Recibo "+rid,
@@ -595,7 +643,7 @@ def casar_facebook(desc, monto, base, recibo):
         log("cargo Facebook confirmado por ORAMI (ref %s):"%rid, recibo)
         return "nueva"
     else:
-        if ya_archivado("fb-"+rid): return "ya"   # pertenece a un mes ya cerrado, no recrear
+        if ya_archivado("fb-"+rid, base.get("orden")): return "ya"   # mes ya cerrado, no recrear
         nb = dict(base)
         nb.update({"tipo":"cargo","monto":monto,"banco":"FACEBK *"+rid,"servicio":"Facebook",
                    "origen":"orami","estado":"verificada","confirmadoOrami":True,
@@ -711,7 +759,7 @@ def procesar_orami(data):
                     if r=="nueva": verif_fb+=1
                     continue
             doc_id="mov-"+recibo
-            if ya_archivado(doc_id): continue
+            if ya_archivado(doc_id, serial): continue
             ref = db.collection("movimientos").document(doc_id)
             existe = ref.get().exists
             base.update({"tipo":"cargo","monto":monto,"banco":merchant(desc),"estado":"verificada","origen":"orami"})
@@ -736,7 +784,7 @@ def procesar_orami(data):
             # 3) Si no caso con ninguna recarga del banco, crear el abono desde ORAMI
             if not hecho:
                 doc_id="mov-"+recibo
-                if ya_archivado(doc_id): continue
+                if ya_archivado(doc_id, serial): continue
                 ref = db.collection("movimientos").document(doc_id)
                 existe = ref.get().exists
                 base.update({"tipo":"abono","transferencia":montoab,"banco":"SPEI recibido","estado":"verificada"})
@@ -768,6 +816,7 @@ def main():
                 "ts": ahora_mx().strftime("%Y-%m-%d %H:%M:%S"), "ok": False, "error": str(e)[:400]})
         except Exception: pass
     cargar_archivados()   # ids de meses cerrados: jamas se re-crean
+    cargar_corte()        # fecha de corte: nada anterior al mes en curso se re-crea
     # Conexion IMAP con REINTENTOS: si el servidor de correo tiene un bache momentaneo
     # (no responde), se reintenta en vez de tumbar toda la corrida. Solo falla de verdad
     # si el correo esta caido en los 3 intentos.
@@ -870,7 +919,8 @@ def main():
         except Exception as e:
             log("no se pudo marcar leido:", e)
     try:
-        dedup_recargas()   # red de seguridad contra recargas dobles
+        dedup_recargas()      # red de seguridad contra recargas dobles
+        limpiar_resucitados() # red de seguridad contra movimientos de meses ya cerrados
     except Exception as e:
         log("dedup fallo:", e)
     try:
