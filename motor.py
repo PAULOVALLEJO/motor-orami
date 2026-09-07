@@ -577,6 +577,36 @@ def procesar_facebook(body):
     enviar_push("Facebook te cobró",
                 "Facebook cobró $%s. Pendiente de confirmar con ORAMI." % importe.group(1))
 
+# ---------- Cargos capturados a mano del administrador de Meta ----------
+# Cuando el recibo de Meta no llega al buzon, se toma la referencia del administrador de
+# anuncios (es la MISMA que trae el recibo y la que ORAMI reporta como FACEBK *XXXX), asi el
+# cargo entra bajo el id fb-<ref>: si despues llega el recibo o el reporte de ORAMI, se
+# reconoce como el mismo movimiento y NO se duplica (solo pasa a verificada).
+# (ref, dia, mes, anio, monto)
+CARGOS_MANUALES = [
+    ("9YD886J9P4", 5, 9, 2026, 15000.00),
+    ("Y5K8Z4N9P4", 6, 9, 2026, 15000.00),
+]
+
+def sembrar_cargos_manuales():
+    MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
+    for rid, dia, mes, anio, monto in CARGOS_MANUALES:
+        doc_id = "fb-" + rid
+        dt = datetime(anio, mes, dia, 12, 0)
+        orden = (dt - datetime(1899,12,30)).total_seconds()/86400.0
+        if ya_archivado(doc_id, orden): continue
+        ref_doc = db.collection("movimientos").document(doc_id)
+        if ref_doc.get().exists: continue
+        ref_doc.set({
+            "tipo":"cargo","servicio":"Facebook","origen":"facebook",
+            "monto":monto,"banco":"Facebook (Meta) - Recibo "+rid,
+            "fecha":"%d-%s"%(dia,MESES[mes-1]),
+            "fechaFull":"%d-%s-%d"%(dia,MESES[mes-1],anio),
+            "hora":"12:00:00","recibo":rid,
+            "orden":orden,"estado":"pendiente","capturadoManual":True
+        })
+        log("cargo Facebook capturado del administrador de Meta:", rid, monto)
+
 # ---------- Procesar correo de ORAMI (xlsx) ----------
 def parse_xlsx(data):
     ns = {'a':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
@@ -817,6 +847,10 @@ def main():
         except Exception: pass
     cargar_archivados()   # ids de meses cerrados: jamas se re-crean
     cargar_corte()        # fecha de corte: nada anterior al mes en curso se re-crea
+    try:
+        sembrar_cargos_manuales()   # cargos tomados del administrador de Meta (idempotente)
+    except Exception as e:
+        log("sembrar cargos manuales fallo:", e)
     # Conexion IMAP con REINTENTOS: si el servidor de correo tiene un bache momentaneo
     # (no responde), se reintenta en vez de tumbar toda la corrida. Solo falla de verdad
     # si el correo esta caido en los 3 intentos.
@@ -923,49 +957,6 @@ def main():
         limpiar_resucitados() # red de seguridad contra movimientos de meses ya cerrados
     except Exception as e:
         log("dedup fallo:", e)
-    # --- DIAGNOSTICO TEMPORAL: que hay realmente en el buzon ---
-    try:
-        typ, dall = M.uid('search', None, 'ALL')
-        todos = dall[0].split()
-        dbg["inbox_total"] = len(todos)
-        ult = []
-        for n in todos[-10:]:
-            try:
-                typ, dh = M.uid('fetch', n, '(BODY.PEEK[HEADER.FIELDS (FROM DATE SUBJECT)])')
-                if not dh or not dh[0]: continue
-                h = email.message_from_bytes(dh[0][1])
-                ult.append("%s | %s | %s" % (decode(h.get("Date","")), decode(h.get("From",""))[:45],
-                                             decode(h.get("Subject",""))[:55]))
-            except Exception: pass
-        dbg["ultimos"] = ult
-        carpetas = []
-        try:
-            typ, dl = M.list()
-            for ln in (dl or []):
-                try: carpetas.append(ln.decode("utf-8","ignore").split(' "." ')[-1].strip('"'))
-                except Exception: pass
-        except Exception: pass
-        dbg["carpetas"] = carpetas[:25]
-        # revisar spam/Junk: ahi se pueden estar cayendo los recibos
-        otros = []
-        for car in ("INBOX.spam", "INBOX.Junk"):
-            try:
-                M.select(car, readonly=True)
-                typ, ds = M.uid('search', None, 'SINCE', since)
-                hs = ds[0].split()
-                otros.append("%s: %d recientes" % (car, len(hs)))
-                for n in hs[-6:]:
-                    typ, dh = M.uid('fetch', n, '(BODY.PEEK[HEADER.FIELDS (FROM DATE SUBJECT)])')
-                    if not dh or not dh[0]: continue
-                    h = email.message_from_bytes(dh[0][1])
-                    otros.append("   %s | %s | %s" % (decode(h.get("Date",""))[:31],
-                                 decode(h.get("From",""))[:40], decode(h.get("Subject",""))[:50]))
-            except Exception as e2:
-                otros.append("%s: err %s" % (car, str(e2)[:60]))
-        M.select("INBOX")
-        dbg["spam"] = otros
-    except Exception as e:
-        dbg["diag_err"] = str(e)[:200]
     try:
         db.collection("tokens").document("zdebug_motor").set(dbg)
     except Exception as e:
