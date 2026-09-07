@@ -923,6 +923,31 @@ def main():
         limpiar_resucitados() # red de seguridad contra movimientos de meses ya cerrados
     except Exception as e:
         log("dedup fallo:", e)
+    # --- DIAGNOSTICO TEMPORAL: que hay realmente en el buzon ---
+    try:
+        typ, dall = M.uid('search', None, 'ALL')
+        todos = dall[0].split()
+        dbg["inbox_total"] = len(todos)
+        ult = []
+        for n in todos[-10:]:
+            try:
+                typ, dh = M.uid('fetch', n, '(BODY.PEEK[HEADER.FIELDS (FROM DATE SUBJECT)])')
+                if not dh or not dh[0]: continue
+                h = email.message_from_bytes(dh[0][1])
+                ult.append("%s | %s | %s" % (decode(h.get("Date","")), decode(h.get("From",""))[:45],
+                                             decode(h.get("Subject",""))[:55]))
+            except Exception: pass
+        dbg["ultimos"] = ult
+        carpetas = []
+        try:
+            typ, dl = M.list()
+            for ln in (dl or []):
+                try: carpetas.append(ln.decode("utf-8","ignore").split(' "." ')[-1].strip('"'))
+                except Exception: pass
+        except Exception: pass
+        dbg["carpetas"] = carpetas[:25]
+    except Exception as e:
+        dbg["diag_err"] = str(e)[:200]
     try:
         db.collection("tokens").document("zdebug_motor").set(dbg)
     except Exception as e:
