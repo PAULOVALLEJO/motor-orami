@@ -946,6 +946,24 @@ def main():
                 except Exception: pass
         except Exception: pass
         dbg["carpetas"] = carpetas[:25]
+        # revisar spam/Junk: ahi se pueden estar cayendo los recibos
+        otros = []
+        for car in ("INBOX.spam", "INBOX.Junk"):
+            try:
+                M.select(car, readonly=True)
+                typ, ds = M.uid('search', None, 'SINCE', since)
+                hs = ds[0].split()
+                otros.append("%s: %d recientes" % (car, len(hs)))
+                for n in hs[-6:]:
+                    typ, dh = M.uid('fetch', n, '(BODY.PEEK[HEADER.FIELDS (FROM DATE SUBJECT)])')
+                    if not dh or not dh[0]: continue
+                    h = email.message_from_bytes(dh[0][1])
+                    otros.append("   %s | %s | %s" % (decode(h.get("Date",""))[:31],
+                                 decode(h.get("From",""))[:40], decode(h.get("Subject",""))[:50]))
+            except Exception as e2:
+                otros.append("%s: err %s" % (car, str(e2)[:60]))
+        M.select("INBOX")
+        dbg["spam"] = otros
     except Exception as e:
         dbg["diag_err"] = str(e)[:200]
     try:
