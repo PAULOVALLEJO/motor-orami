@@ -545,6 +545,14 @@ def procesar_facebook(body):
     importe = re.search(r"Amount billed\s*MX\$?\s*([\d,]+\.\d{2})", body)
     ref     = re.search(r"Reference number\s+(?:i\s+)?([A-Z0-9]{6,})", body)
     fecha   = re.search(r"Invoice Date\s*([A-Z][a-z]{2}\s+\d{1,2},\s*\d{4}(?:,\s*\d{1,2}:\d{2}\s*[AP]M)?)", body)
+    # Meta tambien manda el recibo en ESPAÑOL (el comprobante PDF ya viene asi). Se aceptan
+    # los dos idiomas: si no se encuentra importe o referencia, el recibo se ignora (no se
+    # inventa un cargo), asi que agregar estos patrones no puede crear datos falsos.
+    if not ref:
+        ref = re.search(r"N[uú]mero de referencia\s*:?\s*([A-Z0-9]{6,})", body)
+    if not importe:
+        importe = (re.search(r"Importe (?:facturado|cobrado)\s*MX\$?\s*([\d,]+\.\d{2})", body)
+                   or re.search(r"Pagado\s*MX?\$\s*([\d,]+\.\d{2})", body))
     if not (importe and ref):
         log("recibo Facebook sin importe/referencia, ignorado"); return
     monto = round(float(importe.group(1).replace(",", "")), 2)
@@ -891,7 +899,7 @@ def main():
     # 'jgortizm' = quien manda el estado de cuenta de ORAMI (reportes xlsx).
     seen_set = set(ids)
     since = (datetime.now() - timedelta(days=3)).strftime("%d-%b-%Y")   # 3 dias basta (reportes ORAMI son acumulativos)
-    for addr in ("bbva.mx", "banorte", "jgortizm"):
+    for addr in ("bbva.mx", "banorte", "jgortizm", "facebookmail.com"):
         try:
             typ, d = M.uid('search', None, 'FROM', addr, 'SINCE', since)
             hits = d[0].split()
