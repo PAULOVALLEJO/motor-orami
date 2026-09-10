@@ -586,6 +586,7 @@ def procesar_facebook(body):
 CARGOS_MANUALES = [
     ("9YD886J9P4", 5, 9, 2026, 15000.00),
     ("Y5K8Z4N9P4", 6, 9, 2026, 15000.00),
+    ("B9YPF429P4", 8, 9, 2026, 15000.00),   # FBADS-544-106616796 (administrador de Meta)
     ("5AT9E5N9P4", 9, 9, 2026, 15000.00),   # del comprobante PDF FBADS-544-106624295
 ]
 
