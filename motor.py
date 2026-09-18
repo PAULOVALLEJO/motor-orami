@@ -601,6 +601,7 @@ CARGOS_MANUALES = [
     ("MLDMA529P4", 14, 9, 2026, 15000.00),  # administrador de Meta
     ("5MJ2M6W9P4", 15, 9, 2026, 6345.58),   # administrador de Meta
     ("MWMQL529P4", 16, 9, 2026, 15000.00),  # administrador de Meta
+    ("NQRQT9A9P4", 18, 9, 2026, 15000.00),  # administrador de Meta
 ]
 
 def sembrar_cargos_manuales():
