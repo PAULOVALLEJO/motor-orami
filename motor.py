@@ -905,7 +905,9 @@ def main():
     # 'jgortizm' = quien manda el estado de cuenta de ORAMI (reportes xlsx).
     seen_set = set(ids)
     since = (datetime.now() - timedelta(days=3)).strftime("%d-%b-%Y")   # 3 dias basta (reportes ORAMI son acumulativos)
-    for addr in ("bbva.mx", "banorte", "jgortizm", "facebookmail.com"):
+    # "facebook.com" cubre el remitente REAL de los recibos
+    # (noreply@business-updates.facebook.com) y tambien facebookmail.com
+    for addr in ("bbva.mx", "banorte", "jgortizm", "facebook.com"):
         try:
             typ, d = M.uid('search', None, 'FROM', addr, 'SINCE', since)
             hits = d[0].split()
