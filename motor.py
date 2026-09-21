@@ -602,6 +602,10 @@ CARGOS_MANUALES = [
     ("5MJ2M6W9P4", 15, 9, 2026, 6345.58),   # administrador de Meta
     ("MWMQL529P4", 16, 9, 2026, 15000.00),  # administrador de Meta
     ("NQRQT9A9P4", 18, 9, 2026, 15000.00),  # administrador de Meta
+    ("2N8JZ529P4", 19, 9, 2026, 15000.00),  # administrador de Meta
+    ("B2DG9AA9P4", 21, 9, 2026, 15031.08),  # administrador de Meta
+    # OJO: TFN5C8J9P4 (21-sep, 15000) aparece con estado "Error" en el administrador
+    # = Meta NO pudo cobrarlo. NO se captura: no es un cargo real.
 ]
 
 def sembrar_cargos_manuales():
