@@ -919,6 +919,20 @@ def main():
             for n in hits:
                 if n not in seen_set:
                     ids.append(n); seen_set.add(n)
+            # De Meta guardamos ademas el ENCABEZADO de cada correo: un recibo cuya
+            # referencia ya esta capturada a mano se ignora en silencio, asi que el
+            # contador solo no permite distinguir "llego recibo" de "llego aviso".
+            if addr == "facebook.com":
+                metas = []
+                for n in hits[-6:]:
+                    try:
+                        typ, dh = M.uid('fetch', n, '(BODY.PEEK[HEADER.FIELDS (FROM DATE SUBJECT)])')
+                        if not dh or not dh[0]: continue
+                        hh = email.message_from_bytes(dh[0][1])
+                        metas.append("%s | %s | %s" % (decode(hh.get("Date",""))[:31],
+                                     decode(hh.get("From",""))[:45], decode(hh.get("Subject",""))[:60]))
+                    except Exception: pass
+                dbg["meta_correos"] = metas
         except Exception as e:
             dbg["scan"][addr] = "err"
             log("busqueda de correos recientes fallo:", e)
