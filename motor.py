@@ -605,6 +605,7 @@ CARGOS_MANUALES = [
     ("2N8JZ529P4", 19, 9, 2026, 15000.00),  # administrador de Meta
     ("B2DG9AA9P4", 21, 9, 2026, 15031.08),  # administrador de Meta
     ("VWZX57N9P4", 22, 9, 2026, 9558.93),   # administrador de Meta
+    ("KYUWN869P4", 23, 9, 2026, 15000.00),  # administrador de Meta
     # OJO: TFN5C8J9P4 (21-sep, 15000) aparece con estado "Error" en el administrador
     # = Meta NO pudo cobrarlo. NO se captura: no es un cargo real.
 ]
@@ -943,6 +944,16 @@ def main():
         typ, d = M.uid('search', None, 'SUBJECT', 'receipt', 'SINCE', since)
         hits = d[0].split()
         dbg["scan"]["receipt"] = len(hits)
+        recs = []
+        for n in hits[-6:]:
+            try:
+                typ, dh = M.uid('fetch', n, '(BODY.PEEK[HEADER.FIELDS (FROM DATE SUBJECT)])')
+                if not dh or not dh[0]: continue
+                hh = email.message_from_bytes(dh[0][1])
+                recs.append("%s | %s | %s" % (decode(hh.get("Date",""))[:31],
+                            decode(hh.get("From",""))[:45], decode(hh.get("Subject",""))[:60]))
+            except Exception: pass
+        dbg["receipt_correos"] = recs
         for n in hits:
             if n not in seen_set:
                 ids.append(n); seen_set.add(n)
