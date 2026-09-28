@@ -606,6 +606,7 @@ CARGOS_MANUALES = [
     ("B2DG9AA9P4", 21, 9, 2026, 15031.08),  # administrador de Meta
     ("VWZX57N9P4", 22, 9, 2026, 9558.93),   # administrador de Meta
     ("KYUWN869P4", 23, 9, 2026, 15000.00),  # administrador de Meta
+    ("UKZG49E9P4", 25, 9, 2026, 15000.00),  # administrador de Meta
     # OJO: TFN5C8J9P4 (21-sep, 15000) aparece con estado "Error" en el administrador
     # = Meta NO pudo cobrarlo. NO se captura: no es un cargo real.
 ]
