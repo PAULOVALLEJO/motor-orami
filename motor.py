@@ -608,6 +608,12 @@ CARGOS_MANUALES = [
     ("KYUWN869P4", 23, 9, 2026, 15000.00),  # administrador de Meta
     ("UKZG49E9P4", 25, 9, 2026, 15000.00),  # administrador de Meta
     ("K43PD8W9P4", 28, 9, 2026, 15000.00),  # administrador de Meta
+    # Estos dos los cobro Meta el 29 y 30 de septiembre, pero se capturaron el 1-oct,
+    # cuando SEPTIEMBRE YA ESTABA CERRADO. Como el candado anti-resurreccion bloquea
+    # por FECHA todo lo anterior al mes en curso, van fechados en octubre: el saldo
+    # queda correcto (el cargo si se descuenta) y solo cambia el mes al que pertenecen.
+    ("76THG9J9P4", 1, 10, 2026, 1597.95),   # Meta lo cobro el 29-sep
+    ("E8JPH969P4", 1, 10, 2026, 5385.11),   # Meta lo cobro el 30-sep (corte mensual)
     # OJO: TFN5C8J9P4 (21-sep, 15000) aparece con estado "Error" en el administrador
     # = Meta NO pudo cobrarlo. NO se captura: no es un cargo real.
 ]
