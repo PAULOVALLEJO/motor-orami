@@ -718,6 +718,12 @@ def casar_facebook_por_monto(monto, serial, recibo_orami):
     fecha cercana. Solo toca recibos PENDIENTES: los ya confirmados por su propia referencia
     FACEBK no se tocan, asi NO se mezclan dos cargos distintos del mismo monto (p.ej. dos de
     $4,922.78, uno FACEBK y otro FACEBOOK MEXICO = dos cargos reales). Idempotente por reciboOrami."""
+    # CANDADO (oct-2026): un cargo de ORAMI de un mes YA CERRADO no puede sellar un recibo
+    # del mes en curso. Sin esto, la ventana de +-7 dias dejaba que un cargo de septiembre
+    # "casara" con un recibo de Meta de octubre: el recibo quedaba sellado con el folio
+    # equivocado y el folio bueno de ORAMI creaba despues un mov- DUPLICADO.
+    if CORTE and serial < CORTE:
+        return False
     try:
         fbs = list(db.collection("movimientos").where("origen","==","facebook").stream())
     except Exception as e:
@@ -736,6 +742,35 @@ def casar_facebook_por_monto(monto, serial, recibo_orami):
     cand[0][1].reference.update({"estado":"verificada","confirmadoOrami":True,"reciboOrami":str(recibo_orami)})
     log("cargo Facebook (sin ref) confirmado por ORAMI (monto+fecha):", monto, "recibo", recibo_orami)
     return "nueva"
+
+# ---------- Reparacion puntual: duplicados de Facebook de octubre 2026 ----------
+# Verificado contra la Actividad de pago de Meta Y el estado de cuenta de ORAMI: Meta
+# cobro 3 veces (30-sep 5,385.11 / 2-oct 15,000 / 5-oct 15,000) y ORAMI reporto esos
+# mismos 3 cargos. La app tenia 5 porque dos recibos quedaron sellados con el folio
+# equivocado. Se corrigen los sellos y se borran los dos mov- duplicados.
+SELLOS_CORREGIR = {                       # fb-<ref> : folio de ORAMI que le corresponde
+    "fb-2BLUT8S9P4": "643832032326",      # Meta 2-oct  -> ORAMI 3-oct
+    "fb-P2C4V8N9P4": "726220032326",      # Meta 5-oct  -> ORAMI 6-oct
+}
+DUPLICADOS_BORRAR = ["mov-643832032326", "mov-726220032326"]
+
+def reparar_duplicados_oct2026():
+    for doc_id, rec in SELLOS_CORREGIR.items():
+        try:
+            ref = db.collection("movimientos").document(doc_id)
+            snap = ref.get()
+            if snap.exists and str(snap.to_dict().get("reciboOrami","")) != rec:
+                ref.update({"reciboOrami": rec, "estado": "verificada", "confirmadoOrami": True})
+                log("sello corregido:", doc_id, "->", rec)
+        except Exception as e:
+            log("no se pudo corregir el sello de", doc_id, e)
+    for doc_id in DUPLICADOS_BORRAR:
+        try:
+            ref = db.collection("movimientos").document(doc_id)
+            if ref.get().exists:
+                ref.delete(); log("duplicado de Facebook borrado:", doc_id)
+        except Exception as e:
+            log("no se pudo borrar", doc_id, e)
 
 def casar_recarga(monto, serial, recibo_orami):
     """Casa un 'SPEI Recibido' del reporte de ORAMI con una recarga del banco.
@@ -881,6 +916,10 @@ def main():
         sembrar_cargos_manuales()   # cargos tomados del administrador de Meta (idempotente)
     except Exception as e:
         log("sembrar cargos manuales fallo:", e)
+    try:
+        reparar_duplicados_oct2026()   # corrige sellos y borra los 2 duplicados (idempotente)
+    except Exception as e:
+        log("reparacion de duplicados fallo:", e)
     # Conexion IMAP con REINTENTOS: si el servidor de correo tiene un bache momentaneo
     # (no responde), se reintenta en vez de tumbar toda la corrida. Solo falla de verdad
     # si el correo esta caido en los 3 intentos.
