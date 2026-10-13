@@ -772,6 +772,28 @@ def reparar_duplicados_oct2026():
         except Exception as e:
             log("no se pudo borrar", doc_id, e)
 
+# ---------- Ajuste de saldo contra ORAMI (12-oct-2026) ----------
+# Reconciliacion COMPLETA contra los estados de cuenta de ORAMI de jun/jul/ago/sep/oct:
+# septiembre y octubre cuadran al centavo movimiento por movimiento, pero el saldo
+# arrastraba una diferencia historica de 5,834.28 anterior a septiembre: el saldo inicial
+# que se fijo el 30-jun (23,833.71) quedo mal; con los movimientos de ORAMI el real era
+# ~36,017.56. ORAMI, que es quien tiene el dinero, reporta 16,909.99 al 12-oct-2026.
+# Se ajusta el saldo inicial de octubre una SOLA vez (marca ajusteAplicado en config).
+AJUSTE_ID = "2026-10-13-orami"
+AJUSTE_SALDO_INICIAL = 26855.80          # 32,690.08 - 5,834.28
+
+def aplicar_ajuste_saldo():
+    ref = db.collection("config").document("cierre")
+    snap = ref.get()
+    if not snap.exists: return
+    cfg = snap.to_dict()
+    if cfg.get("ajusteAplicado") == AJUSTE_ID: return      # ya se aplico
+    if cfg.get("mesActual") != "2026-10": return           # solo aplica a octubre
+    ref.update({"saldoInicial": AJUSTE_SALDO_INICIAL,
+                "ajusteAplicado": AJUSTE_ID,
+                "ajusteNota": "Ajuste contra el saldo de ORAMI al 13-oct-2026 (1,255.02 disponible + 15,575.03 retenido): -5,834.28"})
+    log("ajuste de saldo aplicado. saldo inicial de octubre ->", AJUSTE_SALDO_INICIAL)
+
 def casar_recarga(monto, serial, recibo_orami):
     """Casa un 'SPEI Recibido' del reporte de ORAMI con una recarga del banco.
     BBVA no manda clave de rastreo -> se empareja por monto bruto + fecha cercana.
@@ -920,6 +942,10 @@ def main():
         reparar_duplicados_oct2026()   # corrige sellos y borra los 2 duplicados (idempotente)
     except Exception as e:
         log("reparacion de duplicados fallo:", e)
+    try:
+        aplicar_ajuste_saldo()         # empata el saldo con ORAMI (una sola vez)
+    except Exception as e:
+        log("ajuste de saldo fallo:", e)
     # Conexion IMAP con REINTENTOS: si el servidor de correo tiene un bache momentaneo
     # (no responde), se reintenta en vez de tumbar toda la corrida. Solo falla de verdad
     # si el correo esta caido en los 3 intentos.
