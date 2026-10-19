@@ -779,8 +779,15 @@ def reparar_duplicados_oct2026():
 # que se fijo el 30-jun (23,833.71) quedo mal; con los movimientos de ORAMI el real era
 # ~36,017.56. ORAMI, que es quien tiene el dinero, reporta 16,909.99 al 12-oct-2026.
 # Se ajusta el saldo inicial de octubre una SOLA vez (marca ajusteAplicado en config).
-AJUSTE_ID = "2026-10-13-orami"
-AJUSTE_SALDO_INICIAL = 26855.80          # 32,690.08 - 5,834.28
+# 19-oct-2026: se REEMPLAZA el ajuste del 13-oct (estaba anclado en un saldo que creimos
+# reportado por ORAMI y resulto ser el calculo de su hoja, antes de entenderlo). Ancla
+# definitiva = la hoja de control de ORAMI "ARCHIVO FACEBOOK.xlsx", celda K5 = C120-F459:
+#   recargas netas acumuladas 6,617,803.76 - cargos acumulados 6,610,718.24 = 7,085.52
+# Es una suma COMPLETA desde el inicio de la relacion, sin saldo inicial estimado (que es
+# justo de donde venia el error de la app: el inicial de jun-2026 se estimo). Los
+# movimientos de la app ya estan verificados contra el estado de cuenta de ORAMI.
+AJUSTE_ID = "2026-10-19-orami-hoja"
+AJUSTE_SALDO_INICIAL = 47471.96          # deja el saldo de octubre en 7,085.52
 
 def aplicar_ajuste_saldo():
     ref = db.collection("config").document("cierre")
@@ -791,7 +798,7 @@ def aplicar_ajuste_saldo():
     if cfg.get("mesActual") != "2026-10": return           # solo aplica a octubre
     ref.update({"saldoInicial": AJUSTE_SALDO_INICIAL,
                 "ajusteAplicado": AJUSTE_ID,
-                "ajusteNota": "Ajuste contra el saldo de ORAMI al 13-oct-2026 (1,255.02 disponible + 15,575.03 retenido): -5,834.28"})
+                "ajusteNota": "Ajuste contra la hoja de control de ORAMI al 19-oct-2026 (K5 = C120-F459 = 7,085.52). Reemplaza el ajuste del 13-oct."})
     log("ajuste de saldo aplicado. saldo inicial de octubre ->", AJUSTE_SALDO_INICIAL)
 
 def casar_recarga(monto, serial, recibo_orami):
