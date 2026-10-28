@@ -6,7 +6,7 @@ Motor Control ORAMI
 - Correo de ORAMI (xlsx estado de cuenta) -> agrega/actualiza movimientos y marca recargas VERIFICADAS por clave de rastreo
 Se ejecuta en GitHub Actions (cron).
 """
-import os, ssl, imaplib, email, re, json, io, zipfile, smtplib, socket, html
+import os, ssl, imaplib, email, re, json, io, zipfile, smtplib, socket, html, hashlib
 socket.setdefaulttimeout(90)   # ninguna operacion de red se cuelga para siempre, html
 import xml.etree.ElementTree as ET
 from email.header import decode_header
@@ -107,6 +107,34 @@ def ya_archivado(doc_id, orden=None):
     if doc_id in ARCHIVADOS:
         log("omitido (id de un mes ya cerrado):", doc_id); return True
     return False
+
+# ---------- Candado de reproceso (cuota de Firestore) ----------
+# El escaneo de "correos de los ultimos 3 dias AUNQUE ya esten leidos" hacia que el MISMO
+# reporte de ORAMI se volviera a procesar cada 15 minutos. Procesar un reporte cuesta cientos
+# de lecturas y escrituras; con ~96 corridas al dia eso revienta la cuota gratis de Firestore
+# (50,000 lecturas / 20,000 escrituras al dia) y la app se queda SIN DATOS hasta la medianoche.
+# Ahora se guarda la huella (sha1) de cada adjunto ya procesado: volver a ver el mismo archivo
+# cuesta cero. Si ORAMI manda un archivo CORREGIDO la huella cambia y si se procesa.
+PROCESADOS = []   # huellas en orden de llegada; se conservan las ultimas 40
+
+def cargar_procesados():
+    global PROCESADOS
+    try:
+        s = db.collection("config").document("procesados").get()
+        if s.exists:
+            PROCESADOS = list(s.to_dict().get("huellas", []) or [])
+    except Exception as e:
+        log("no se pudieron cargar las huellas de reportes:", e)
+
+def marcar_procesado(huella):
+    global PROCESADOS
+    if huella in PROCESADOS: return
+    PROCESADOS = (PROCESADOS + [huella])[-40:]
+    try:
+        db.collection("config").document("procesados").set(
+            {"huellas": PROCESADOS, "actualizado": ahora_mx().strftime("%Y-%m-%d %H:%M:%S")})
+    except Exception as e:
+        log("no se pudo guardar la huella del reporte:", e)
 
 def limpiar_resucitados():
     """Red de seguridad contra movimientos de meses YA CERRADOS (ya contados en su cierre;
@@ -573,14 +601,16 @@ def procesar_facebook(body):
         dt = datetime.now()
     orden = (dt - datetime(1899,12,30)).total_seconds()/86400.0
     if ya_archivado(doc_id, orden): return
-    ref_doc.set({
+    datos = {
         "tipo":"cargo","servicio":"Facebook","origen":"facebook",
         "monto":monto,"banco":"Facebook (Meta) - Recibo "+rid,
         "fecha":"%d-%s"%(dt.day,MESES[dt.month-1]),
         "fechaFull":"%d-%s-%d"%(dt.day,MESES[dt.month-1],dt.year),
         "hora":dt.strftime("%H:%M:%S"),"recibo":rid,
         "orden":orden,"estado":"pendiente"
-    })
+    }
+    ref_doc.set(datos)
+    _fb_cache_add(datos, ref_doc)   # visible para el reporte de ORAMI de ESTA misma corrida
     log("cargo Facebook capturado:", rid, monto)
     enviar_push("Facebook te cobró",
                 "Facebook cobró $%s. Pendiente de confirmar con ORAMI." % importe.group(1))
@@ -712,6 +742,25 @@ def casar_facebook(desc, monto, base, recibo):
         log("cargo Facebook creado desde ORAMI bajo id de referencia:", rid)
         return "nueva"
 
+# CACHE de recibos de Meta para la corrida. Antes se consultaba la coleccion UNA VEZ POR CADA
+# renglon de Facebook del reporte: ~20 renglones x ~25 recibos x 3 reportes x 96 corridas al dia
+# = cientos de miles de lecturas = cuota gratis de Firestore reventada y la app sin datos.
+# Ahora se consulta una sola vez por corrida y el cache se mantiene al dia a mano.
+_FB_CACHE = None   # lista de [datos(dict mutable), referencia]
+
+def _fb_docs():
+    global _FB_CACHE
+    if _FB_CACHE is None:
+        _FB_CACHE = [[d.to_dict(), d.reference]
+                     for d in db.collection("movimientos").where("origen","==","facebook").stream()]
+    return _FB_CACHE
+
+def _fb_cache_add(datos, ref):
+    """Un recibo fb- recien creado entra al cache para que un renglon posterior del MISMO
+    reporte no lo vuelva a crear ni lo case dos veces."""
+    if _FB_CACHE is not None:
+        _FB_CACHE.append([dict(datos), ref])
+
 def casar_facebook_por_monto(monto, serial, recibo_orami):
     """Para cargos de Facebook que ORAMI reporta SIN referencia (descripcion 'FACEBOOK MEXICO'
     o 'METAPAY'): los casa con un recibo de Meta (fb-<ref>) PENDIENTE del MISMO monto exacto y
@@ -725,21 +774,23 @@ def casar_facebook_por_monto(monto, serial, recibo_orami):
     if CORTE and serial < CORTE:
         return False
     try:
-        fbs = list(db.collection("movimientos").where("origen","==","facebook").stream())
+        fbs = _fb_docs()
     except Exception as e:
         log("query recibos fb fallo:", e); return False
     # idempotencia: si un recibo fb ya fue sellado con este recibo de ORAMI, ya se caso
-    for d in fbs:
-        if str(d.to_dict().get("reciboOrami","")) == str(recibo_orami):
+    for m, _ref in fbs:
+        if str(m.get("reciboOrami","")) == str(recibo_orami):
             return "ya"
     cand=[]
-    for d in fbs:
-        m=d.to_dict()
+    for m, ref in fbs:
         if m.get("estado")=="pendiente" and abs(round(float(m.get("monto",0) or 0),2)-monto) < 0.01 and abs(float(m.get("orden",0))-serial) <= 7:
-            cand.append((abs(float(m.get("orden",0))-serial), d))
+            cand.append((abs(float(m.get("orden",0))-serial), m, ref))
     if not cand: return False
     cand.sort(key=lambda x:x[0])
-    cand[0][1].reference.update({"estado":"verificada","confirmadoOrami":True,"reciboOrami":str(recibo_orami)})
+    _dist, m, ref = cand[0]
+    sello = {"estado":"verificada","confirmadoOrami":True,"reciboOrami":str(recibo_orami)}
+    ref.update(sello)
+    m.update(sello)   # el cache queda al dia: este recibo ya no se puede casar otra vez
     log("cargo Facebook (sin ref) confirmado por ORAMI (monto+fecha):", monto, "recibo", recibo_orami)
     return "nueva"
 
@@ -885,10 +936,15 @@ def procesar_orami(data):
             doc_id="mov-"+recibo
             if ya_archivado(doc_id, serial): continue
             ref = db.collection("movimientos").document(doc_id)
-            existe = ref.get().exists
+            snap = ref.get()
             base.update({"tipo":"cargo","monto":monto,"banco":merchant(desc),"estado":"verificada","origen":"orami"})
+            if snap.exists:
+                # Ya esta y no cambio nada -> NO se reescribe (ahorra escrituras de cuota)
+                viejo = snap.to_dict() or {}
+                if all(viejo.get(k) == v for k, v in base.items()): continue
+            else:
+                nuevos+=1
             ref.set(base, merge=True)
-            if not existe: nuevos+=1
         elif abono not in ('',None):
             montoab=round(float(abono),2); hecho=False
             # 1) Banorte: casar por Clave de Rastreo (si viene en la descripcion)
@@ -910,10 +966,14 @@ def procesar_orami(data):
                 doc_id="mov-"+recibo
                 if ya_archivado(doc_id, serial): continue
                 ref = db.collection("movimientos").document(doc_id)
-                existe = ref.get().exists
+                snap = ref.get()
                 base.update({"tipo":"abono","transferencia":montoab,"banco":"SPEI recibido","estado":"verificada"})
+                if snap.exists:
+                    viejo = snap.to_dict() or {}
+                    if all(viejo.get(k) == v for k, v in base.items()): continue
+                else:
+                    nuevos+=1
                 ref.set(base, merge=True)
-                if not existe: nuevos+=1
     log(f"ORAMI procesado: {nuevos} movimientos, {verif} recargas verificadas, {verif_fb} cargos Facebook confirmados")
     # Notificar SOLO si hubo algo nuevo (el reporte se reprocesa cada corrida por el escaneo
     # de 7 dias; sin este candado mandaria un push repetido en cada corrida).
@@ -941,6 +1001,7 @@ def main():
         except Exception: pass
     cargar_archivados()   # ids de meses cerrados: jamas se re-crean
     cargar_corte()        # fecha de corte: nada anterior al mes en curso se re-crea
+    cargar_procesados()   # huellas de reportes ya procesados: no se reprocesan (cuota)
     try:
         sembrar_cargos_manuales()   # cargos tomados del administrador de Meta (idempotente)
     except Exception as e:
@@ -1069,7 +1130,12 @@ def main():
             elif es_banorte:
                 procesar_banco(body)
             elif xlsx is not None:
-                procesar_orami(xlsx)
+                huella = hashlib.sha1(xlsx).hexdigest()
+                if huella in PROCESADOS:
+                    log("reporte de ORAMI ya procesado (misma huella), se omite")
+                else:
+                    procesar_orami(xlsx)
+                    marcar_procesado(huella)   # solo si termino bien
             elif "facebook.com" in frm or es_facebook(subj, body):
                 procesar_facebook(body)
             else:
