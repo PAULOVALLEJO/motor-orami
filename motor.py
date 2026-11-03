@@ -852,6 +852,33 @@ def aplicar_ajuste_saldo():
                 "ajusteNota": "Ajuste contra la hoja de control de ORAMI al 19-oct-2026 (K5 = C120-F459 = 7,085.52). Reemplaza el ajuste del 13-oct."})
     log("ajuste de saldo aplicado. saldo inicial de octubre ->", AJUSTE_SALDO_INICIAL)
 
+# ---------- Correccion: el cargo de Google quedo restado dos veces (3-nov-2026) ----------
+# El 19-oct se anclo el saldo de la app a la cifra de ORAMI (7,085.52), que YA traia restado
+# su RETENIDO de 15,397.25 = Facebook 15,000 + Google 395.00 (los dos se postearon el 20-oct).
+# El Facebook ya existia en la app como recibo pendiente y el motor lo CASO sin duplicar; el
+# Google no tiene recibo directo, asi que cuando llego el renglon de ORAMI se creo
+# mov-1090786032326 NUEVO -> ese cargo quedo restado DOS VECES.
+# Se corrigio en el cierre? NO: el cierre arrastra la cifra que calcula la app, no la de ORAMI,
+# asi que el error paso intacto a noviembre. Aqui se devuelven los 394.97.
+# 5,755.66 + 394.97 = 6,150.63, que es exactamente lo que reportaba la hoja de ORAMI al 27-oct.
+# LECCION: no anclar el saldo a la cifra de ORAMI mientras haya RETENIDO vivo sin desglosar,
+# porque los cargos retenidos que la app todavia no tiene se acaban restando dos veces.
+CORRECCION_ID = "2026-11-03-google-doble"
+CORRECCION_MES = "2026-11"
+CORRECCION_SALDO_INICIAL = 6150.63       # era 5,755.66
+
+def aplicar_correccion_google():
+    ref = db.collection("config").document("cierre")
+    snap = ref.get()
+    if not snap.exists: return
+    cfg = snap.to_dict()
+    if cfg.get("correccionAplicada") == CORRECCION_ID: return   # ya se aplico
+    if cfg.get("mesActual") != CORRECCION_MES: return           # solo aplica a noviembre
+    ref.update({"saldoInicial": CORRECCION_SALDO_INICIAL,
+                "correccionAplicada": CORRECCION_ID,
+                "correccionNota": "Devuelve $394.97: el cargo de Google del 20-oct (mov-1090786032326) quedo restado dos veces porque el ancla del 19-oct ya lo traia dentro del retenido de ORAMI."})
+    log("correccion Google aplicada. saldo inicial de noviembre ->", CORRECCION_SALDO_INICIAL)
+
 def casar_recarga(monto, serial, recibo_orami):
     """Casa un 'SPEI Recibido' del reporte de ORAMI con una recarga del banco.
     BBVA no manda clave de rastreo -> se empareja por monto bruto + fecha cercana.
@@ -1014,6 +1041,10 @@ def main():
         aplicar_ajuste_saldo()         # empata el saldo con ORAMI (una sola vez)
     except Exception as e:
         log("ajuste de saldo fallo:", e)
+    try:
+        aplicar_correccion_google()    # devuelve los 394.97 del Google doble (una sola vez)
+    except Exception as e:
+        log("correccion Google fallo:", e)
     # Conexion IMAP con REINTENTOS: si el servidor de correo tiene un bache momentaneo
     # (no responde), se reintenta en vez de tumbar toda la corrida. Solo falla de verdad
     # si el correo esta caido en los 3 intentos.
