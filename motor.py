@@ -95,17 +95,28 @@ def cargar_corte():
     except Exception as e:
         log("no se pudo cargar el corte:", e); CORTE = 0.0
 
-def ya_archivado(doc_id, orden=None):
+def ya_archivado(doc_id, orden=None, solo_por_id=False):
     """Candado anti-resurreccion. Dos capas:
-    1) por FECHA (principal): un movimiento anterior al mes en curso ya fue archivado en el
-       cierre -> no re-crearlo. Es a prueba del ID con que venga: un mismo cargo puede llegar
-       como fb-<ref> (recibo de Meta) o mov-<recibo> (reporte de ORAMI), y una recarga como
-       rec-<folio> (banco) o mov-<recibo> (ORAMI); por ID solos, resucitaban.
-    2) por ID (respaldo): lista de ids archivados en cierres previos."""
-    if orden is not None and CORTE and float(orden) < CORTE:
-        log("omitido (fecha de un mes ya cerrado):", doc_id); return True
+    1) por ID: lista de ids archivados en cierres previos.
+    2) por FECHA: un movimiento anterior al mes en curso ya fue archivado en el cierre ->
+       no re-crearlo. Hace falta ademas del ID porque un mismo movimiento puede llegar con
+       DOS ids distintos: un cargo como fb-<ref> (recibo de Meta) o mov-<recibo> (reporte de
+       ORAMI), y una recarga como rec-<folio> (banco) o mov-<recibo> (ORAMI). Por ID solo,
+       resucitaban con el otro id.
+
+    solo_por_id=True -> se SALTA la capa de fecha. Se usa para los CARGOS QUE NO SON DE
+    FACEBOOK: esos solo pueden entrar por el reporte de ORAMI y siempre con el mismo id
+    mov-<recibo>, asi que no hay segundo id posible y la lista de archivados ya es completa.
+    Para esa clase, la capa de fecha no protegia de nada y en cambio PERDIA movimientos:
+    si el reporte de ORAMI llegaba despues del cierre, sus cargos de fin de mes se tiraban
+    para siempre. Paso el 3-nov-2026: el reporte traia UBER 68.95 (29-oct) y SHOPIFY
+    3,636.31 (30-oct), octubre ya estaba cerrado y los dos se perdieron ($3,705.26)."""
     if doc_id in ARCHIVADOS:
         log("omitido (id de un mes ya cerrado):", doc_id); return True
+    if solo_por_id:
+        return False
+    if orden is not None and CORTE and float(orden) < CORTE:
+        log("omitido (fecha de un mes ya cerrado):", doc_id); return True
     return False
 
 # ---------- Candado de reproceso (cuota de Firestore) ----------
@@ -117,14 +128,38 @@ def ya_archivado(doc_id, orden=None):
 # cuesta cero. Si ORAMI manda un archivo CORREGIDO la huella cambia y si se procesa.
 PROCESADOS = []   # huellas en orden de llegada; se conservan las ultimas 40
 
+# Reportes que hay que VOLVER a leer una vez, aunque su huella ya este registrada: se
+# procesaron cuando el candado de fecha todavia tiraba los movimientos de un mes cerrado.
+# Al releerlos con el candado corregido, entran los que se habian perdido.
+HUELLAS_REPROCESAR = {
+    # reporte de ORAMI del 3-nov-2026 (consultademovimientos261031.xlsx): traia
+    # UBER 68.95 del 29-oct y SHOPIFY 3,636.31 del 30-oct y los dos se tiraron.
+    "4a1701de91d45837e2eaec0181e52d553423fc3f",
+}
+REPROCESADAS = []   # las de HUELLAS_REPROCESAR que ya se releyeron (para no repetir)
+
 def cargar_procesados():
-    global PROCESADOS
+    global PROCESADOS, REPROCESADAS
     try:
         s = db.collection("config").document("procesados").get()
         if s.exists:
-            PROCESADOS = list(s.to_dict().get("huellas", []) or [])
+            d = s.to_dict()
+            PROCESADOS = list(d.get("huellas", []) or [])
+            REPROCESADAS = list(d.get("reprocesadas", []) or [])
     except Exception as e:
         log("no se pudieron cargar las huellas de reportes:", e)
+
+def toca_reprocesar(huella):
+    """True si este reporte hay que releerlo una vez. Deja constancia para no repetirlo."""
+    global REPROCESADAS
+    if huella not in HUELLAS_REPROCESAR or huella in REPROCESADAS:
+        return False
+    REPROCESADAS = REPROCESADAS + [huella]
+    try:
+        db.collection("config").document("procesados").set({"reprocesadas": REPROCESADAS}, merge=True)
+    except Exception as e:
+        log("no se pudo marcar el reproceso:", e)
+    return True
 
 def marcar_procesado(huella):
     global PROCESADOS
@@ -969,10 +1004,18 @@ def procesar_orami(data):
                     if r=="nueva": verif_fb+=1
                     continue
             doc_id="mov-"+recibo
-            if ya_archivado(doc_id, serial): continue
+            # Un cargo que no es de Facebook solo entra por aqui y siempre con este mismo
+            # id, asi que basta la lista de archivados: la capa de fecha solo lo perderia
+            # si el reporte de ORAMI llego despues del cierre.
+            if ya_archivado(doc_id, serial, solo_por_id=(servicio(desc)!='Facebook')): continue
             ref = db.collection("movimientos").document(doc_id)
             snap = ref.get()
             base.update({"tipo":"cargo","monto":monto,"banco":merchant(desc),"estado":"verificada","origen":"orami"})
+            if CORTE and serial < CORTE:
+                # Llego tarde: su fecha es de un mes ya cerrado pero NUNCA se conto. Se marca
+                # arrastrado para que la limpieza anti-resurreccion no lo borre; se archivara
+                # en el proximo cierre.
+                base["arrastrado"] = True
             if snap.exists:
                 # Ya esta y no cambio nada -> NO se reescribe (ahorra escrituras de cuota)
                 viejo = snap.to_dict() or {}
@@ -1192,7 +1235,7 @@ def main():
                 procesar_banco(body)
             elif xlsx is not None:
                 huella = hashlib.sha1(xlsx).hexdigest()
-                if huella in PROCESADOS:
+                if huella in PROCESADOS and not toca_reprocesar(huella):
                     log("reporte de ORAMI ya procesado (misma huella), se omite")
                 else:
                     procesar_orami(xlsx)
