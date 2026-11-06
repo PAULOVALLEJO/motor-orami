@@ -646,6 +646,14 @@ CARGOS_MANUALES = [
     ("E8JPH969P4", 1, 10, 2026, 5385.11),   # Meta lo cobro el 30-sep (corte mensual)
     # OJO: TFN5C8J9P4 (21-sep, 15000) aparece con estado "Error" en el administrador
     # = Meta NO pudo cobrarlo. NO se captura: no es un cargo real.
+    # --- noviembre 2026: Meta volvio a dejar de mandar el recibo de este cargo.
+    # El diagnostico del motor (tokens/zdebug_motor) solo vio UN correo de Meta en la
+    # ventana de 3 dias, el del 3-nov; el del 4-nov nunca llego al buzon. Se captura del
+    # administrador de anuncios con su referencia, asi que si el recibo o el reporte de
+    # ORAMI llegan despues, se reconocen como el mismo movimiento y NO duplican.
+    ("GBRQNDW9P4", 4, 11, 2026, 15000.00),
+    # OJO: el cargo de MX$3.04 del 1-nov salio con metodo "Credito publicitario",
+    # NO con la Mastercard 9535. NO se captura: no sale del saldo de ORAMI.
 ]
 
 def sembrar_cargos_manuales():
