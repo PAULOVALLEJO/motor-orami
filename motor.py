@@ -1115,6 +1115,28 @@ def main():
                                      decode(hh.get("From",""))[:45], decode(hh.get("Subject",""))[:60]))
                     except Exception: pass
                 dbg["meta_correos"] = metas
+            # De ORAMI igual: el contador solo no distingue "llego el reporte" de "llego
+            # un correo sin adjunto" ni de "es el MISMO archivo que ya se proceso" (el
+            # candado de huella lo salta en silencio). Aqui se ve fecha, asunto, si trae
+            # xlsx y si esa huella ya estaba procesada.
+            if addr == "jgortizm":
+                oramis = []
+                for n in hits[-8:]:
+                    try:
+                        typ, dm = M.uid('fetch', n, '(RFC822)')
+                        if not dm or not dm[0]: continue
+                        mm = email.message_from_bytes(dm[0][1])
+                        adj = get_xlsx_attachment(mm)
+                        if adj is None:
+                            est = "SIN xlsx"
+                        else:
+                            h = hashlib.sha1(adj).hexdigest()
+                            est = ("xlsx ya procesado" if h in PROCESADOS else "xlsx NUEVO") + " " + h[:8]
+                        oramis.append("%s | %s | %s" % (decode(mm.get("Date",""))[:31],
+                                      decode(mm.get("Subject",""))[:45], est))
+                    except Exception as e:
+                        oramis.append("error al leer: %s" % str(e)[:60])
+                dbg["orami_correos"] = oramis
         except Exception as e:
             dbg["scan"][addr] = "err"
             log("busqueda de correos recientes fallo:", e)
