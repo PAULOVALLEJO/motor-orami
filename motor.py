@@ -687,6 +687,20 @@ CARGOS_MANUALES = [
     # administrador de anuncios con su referencia, asi que si el recibo o el reporte de
     # ORAMI llegan despues, se reconocen como el mismo movimiento y NO duplican.
     ("GBRQNDW9P4", 4, 11, 2026, 15000.00),
+    # 10-nov-2026: Meta lleva 3 dias sin mandar NINGUN recibo (el diagnostico del motor
+    # reporta facebook.com:0 y receipt:0 en la ventana de 3 dias) y los correos de Gerardo
+    # siguen llegando SIN adjunto. Las dos fuentes secas = la app no se entera de nada.
+    # Se capturan del administrador de anuncios los que salen "Pagado".
+    ("KS72VE69P4",  6, 11, 2026,  8275.11),   # FBADS-544-106945474
+    ("K62E3HA9P4",  7, 11, 2026, 15000.00),   # FBADS-544-106953991
+    ("3DAPHFE9P4",  9, 11, 2026, 15000.00),   # FBADS-544-106966741
+    ("MV24JEW9P4", 10, 11, 2026,  1439.30),   # FBADS-544-106971355
+    ("4SAWDD29P4", 10, 11, 2026,   205.62),   # FBADS-544-106970866
+    # OJO: el 10-nov hay CUATRO cargos con estado "Error" que NO se capturan (Meta no
+    # pudo cobrarlos, no salen del saldo): EVURJES9P4 1,439.30 / A4SNHEW9P4 1,439.30 /
+    # 9RJRGF69P4 359.83 / FBBUDD29P4 1,644.92. Ojo que EVURJES9P4 y A4SNHEW9P4 son del
+    # mismo monto que MV24JEW9P4 (1,439.30), que si entro: son reintentos del mismo
+    # cobro, no tres cargos. Por eso se capturan por REFERENCIA y nunca por monto.
     # OJO: el cargo de MX$3.04 del 1-nov salio con metodo "Credito publicitario",
     # NO con la Mastercard 9535. NO se captura: no sale del saldo de ORAMI.
 ]
