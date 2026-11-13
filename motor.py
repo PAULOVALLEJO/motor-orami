@@ -696,6 +696,10 @@ CARGOS_MANUALES = [
     ("3DAPHFE9P4",  9, 11, 2026, 15000.00),   # FBADS-544-106966741
     ("MV24JEW9P4", 10, 11, 2026,  1439.30),   # FBADS-544-106971355
     ("4SAWDD29P4", 10, 11, 2026,   205.62),   # FBADS-544-106970866
+    # 13-nov-2026: Meta sigue sin mandar recibos (facebook.com:0 y receipt:0 por 4o dia).
+    ("5W8YPES9P4", 11, 11, 2026, 15000.00),
+    ("J3EWTEW9P4", 12, 11, 2026, 15000.00),
+    ("JA8A4GE9P4", 13, 11, 2026,  8959.84),
     # OJO: el 10-nov hay CUATRO cargos con estado "Error" que NO se capturan (Meta no
     # pudo cobrarlos, no salen del saldo): EVURJES9P4 1,439.30 / A4SNHEW9P4 1,439.30 /
     # 9RJRGF69P4 359.83 / FBBUDD29P4 1,644.92. Ojo que EVURJES9P4 y A4SNHEW9P4 son del
