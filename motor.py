@@ -703,12 +703,16 @@ CARGOS_MANUALES = [
     ("S4BX6GE9P4", 13, 11, 2026, 15000.00),   # 14-nov: 5o dia sin recibos de Meta
     ("PX9V2E29P4", 14, 11, 2026, 15000.00),
     ("4ZDBBFS9P4", 15, 11, 2026, 15000.00),
-    # OJO (16-nov): Meta acumula CINCO cobros con estado "Error" que NO se capturan:
+    # El reintento acumulado de 22,523.67 SI paso al tercer intento: entra UNA sola vez.
+    ("6MRJDJA9P4", 16, 11, 2026, 22523.67),
+    # OJO (16-nov): CINCO cobros con estado "Error" que NO se capturan porque nunca
+    # salieron del saldo:
     #   15-nov UC99XEN9P4 15,000.00 / 65ST8E29P4 15,028.97 / KT8PAJA9P4 1,878.62
     #   16-nov 8LD2RG2AP4 22,523.67 / WEP7JGE9P4 22,523.67
     # El 15-nov un cobro de 15,000 PASO y otro de 15,000 FALLO el mismo dia: se acabo el
-    # saldo a media jornada. Meta reintenta acumulando lo no cobrado (por eso ya va en
-    # 22,523.67). Si se capturaran, se restaria dinero que nunca salio.
+    # saldo a media jornada. Meta reintenta acumulando lo no cobrado, por eso los tres
+    # intentos de 22,523.67 del 16-nov son EL MISMO cobro: dos fallaron y el tercero
+    # (6MRJDJA9P4) paso. Capturar los tres restaria 45,047.34 que nunca salieron.
     # OJO: el 10-nov hay CUATRO cargos con estado "Error" que NO se capturan (Meta no
     # pudo cobrarlos, no salen del saldo): EVURJES9P4 1,439.30 / A4SNHEW9P4 1,439.30 /
     # 9RJRGF69P4 359.83 / FBBUDD29P4 1,644.92. Ojo que EVURJES9P4 y A4SNHEW9P4 son del
