@@ -705,6 +705,12 @@ CARGOS_MANUALES = [
     ("4ZDBBFS9P4", 15, 11, 2026, 15000.00),
     # El reintento acumulado de 22,523.67 SI paso al tercer intento: entra UNA sola vez.
     ("6MRJDJA9P4", 16, 11, 2026, 22523.67),
+    # 17-nov: ya con saldo, Meta cobro lo atrasado. D59UHFW9P4 y BPT8LGJ9P4 son del mismo
+    # monto y del mismo dia pero con referencias DISTINTAS: son dos cargos reales, no un
+    # reintento (los reintentos del 16-nov eran todos 22,523.67).
+    ("BPT8LGJ9P4", 16, 11, 2026, 15000.00),
+    ("D59UHFW9P4", 16, 11, 2026, 15000.00),
+    ("ZAPFXG2AP4", 17, 11, 2026,   783.14),
     # OJO (16-nov): CINCO cobros con estado "Error" que NO se capturan porque nunca
     # salieron del saldo:
     #   15-nov UC99XEN9P4 15,000.00 / 65ST8E29P4 15,028.97 / KT8PAJA9P4 1,878.62
