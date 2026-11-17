@@ -885,6 +885,23 @@ SELLOS_CORREGIR = {                       # fb-<ref> : folio de ORAMI que le cor
 }
 DUPLICADOS_BORRAR = ["mov-643832032326", "mov-726220032326"]
 
+# Movimientos mal creados que hay que BORRAR una sola vez. Idempotente: si ya no existe,
+# no hace nada. No se vuelven a crear porque el blindaje de procesar_orami los corrige.
+BORRAR_MAL_CREADOS = [
+    # SPEI Recibido del 14-nov-2026 08:53 ($32,000, recarga de Paulo) que ORAMI exporto
+    # con el importe en la columna de CARGOS y entro restando en vez de sumando.
+    "mov-063239016255",
+]
+
+def borrar_mal_creados():
+    for doc_id in BORRAR_MAL_CREADOS:
+        try:
+            ref = db.collection("movimientos").document(doc_id)
+            if ref.get().exists:
+                ref.delete(); log("movimiento mal creado borrado:", doc_id)
+        except Exception as e:
+            log("no se pudo borrar", doc_id, ":", e)
+
 def reparar_duplicados_oct2026():
     for doc_id, rec in SELLOS_CORREGIR.items():
         try:
@@ -1021,6 +1038,15 @@ def procesar_orami(data):
         if not r or not str(r[0]).strip().isdigit(): continue
         serial=float(r[1]); dt=datetime(1899,12,30)+timedelta(days=serial)
         desc=r[4] if len(r)>4 else ''; cargo=r[5] if len(r)>5 else ''; abono=r[6] if len(r)>6 else ''
+        # BLINDAJE: ORAMI a veces exporta un "SPEI Recibido" (una recarga de Paulo, dinero
+        # que ENTRA) con el importe en la columna de CARGOS. Tomarlo al pie de la letra
+        # RESTA el dinero en vez de sumarlo. Paso el 14-nov-2026: el SPEI de las 08:53 por
+        # $32,000 entro como mov-063239016255 tipo "cargo" y dejo el saldo $32,000 abajo.
+        # Una recarga NUNCA es un cargo, venga en la columna que venga.
+        if cargo not in ('', None) and re.search(r'SPEI\s+Recibido', str(desc), re.I):
+            log("SPEI Recibido con importe en la columna de cargos; se trata como abono:",
+                str(r[3]) if len(r) > 3 else '')
+            abono = cargo; cargo = ''
         recibo=str(r[3]) if len(r)>3 else ''
         base={"orden":serial,"servicio":servicio(desc),
               "fecha":"%d-%s"%(dt.day,MESES[dt.month-1]),
@@ -1125,6 +1151,10 @@ def main():
         reparar_duplicados_oct2026()   # corrige sellos y borra los 2 duplicados (idempotente)
     except Exception as e:
         log("reparacion de duplicados fallo:", e)
+    try:
+        borrar_mal_creados()           # quita movimientos creados con el tipo equivocado
+    except Exception as e:
+        log("borrado de mal creados fallo:", e)
     try:
         aplicar_ajuste_saldo()         # empata el saldo con ORAMI (una sola vez)
     except Exception as e:
