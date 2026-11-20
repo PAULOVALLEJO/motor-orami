@@ -851,8 +851,14 @@ def casar_facebook_por_monto(monto, serial, recibo_orami):
     # del mes en curso. Sin esto, la ventana de +-7 dias dejaba que un cargo de septiembre
     # "casara" con un recibo de Meta de octubre: el recibo quedaba sellado con el folio
     # equivocado y el folio bueno de ORAMI creaba despues un mov- DUPLICADO.
-    if CORTE and serial < CORTE:
-        return False
+    # EXCEPCION (nov-2026): si el recibo candidato esta marcado 'arrastrado' SI se puede
+    # sellar aunque el renglon de ORAMI sea de un mes cerrado. Un arrastrado es un
+    # pendiente que ya venia de ese mes y que el cierre dejo pasar a proposito; nunca es
+    # un recibo nuevo, asi que no hay riesgo de mezclar meses. Sin esta excepcion se
+    # quedaban colgados PARA SIEMPRE los cargos que ORAMI reporta SIN referencia
+    # (descripcion "FACEBOOK MEXICO S DE R" en vez de "FACEBK *<ref>"): paso con
+    # fb-FS2DJFA9P4 (28-oct, 15,000), que ORAMI reporto el 29-oct ya con octubre cerrado.
+    solo_arrastrados = bool(CORTE and serial < CORTE)
     try:
         fbs = _fb_docs()
     except Exception as e:
@@ -863,6 +869,7 @@ def casar_facebook_por_monto(monto, serial, recibo_orami):
             return "ya"
     cand=[]
     for m, ref in fbs:
+        if solo_arrastrados and not m.get("arrastrado"): continue
         if m.get("estado")=="pendiente" and abs(round(float(m.get("monto",0) or 0),2)-monto) < 0.01 and abs(float(m.get("orden",0))-serial) <= 7:
             cand.append((abs(float(m.get("orden",0))-serial), m, ref))
     if not cand: return False
@@ -882,6 +889,12 @@ def casar_facebook_por_monto(monto, serial, recibo_orami):
 SELLOS_CORREGIR = {                       # fb-<ref> : folio de ORAMI que le corresponde
     "fb-2BLUT8S9P4": "643832032326",      # Meta 2-oct  -> ORAMI 3-oct
     "fb-P2C4V8N9P4": "726220032326",      # Meta 5-oct  -> ORAMI 6-oct
+    # Meta 28-oct 19:48 -> ORAMI 29-oct recibo 1670646032327. ORAMI lo describio
+    # "FACEBOOK MEXICO S DE R" (sin la referencia FACEBK *FS2DJFA9P4), asi que no se
+    # pudo casar por referencia, y el candado de fecha bloqueaba casarlo por monto
+    # porque octubre ya estaba cerrado. Se sella a mano; la excepcion de 'arrastrado'
+    # en casar_facebook_por_monto evita que vuelva a pasar.
+    "fb-FS2DJFA9P4": "1670646032327",
 }
 DUPLICADOS_BORRAR = ["mov-643832032326", "mov-726220032326"]
 
